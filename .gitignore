@@ -1,0 +1,10 @@
+# MiniGit runtime directories
+.minigit/
+.minigit_backup/
+
+# Compiled binaries
+*.exe
+
+# Test / Scratch files
+test.txt
+
