@@ -3,7 +3,9 @@
 
 #include <string>
 
+using namespace std;
+
 // Computes a deterministic polynomial hash for the given string content
-std::string calculateHash(const std::string& content);
+string calculateHash(const string& content);
 
 #endif // HASH_H

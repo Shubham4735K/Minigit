@@ -3,7 +3,7 @@
 A lightweight command-line version-control project designed for 2nd-year Data Structures and Algorithms (DSA). MiniGit demonstrates core data structure concepts step-by-step.
 
 ## Current Project Status
-**Phase 5 — Commit**
+**Phase 7 — Checkout, Commit Log & Content-Addressable Storage**
 
 ---
 
@@ -14,7 +14,7 @@ A lightweight command-line version-control project designed for 2nd-year Data St
 minigit init
 ```
 - Checks if a `.minigit` directory already exists to prevent overwriting existing data.
-- Creates a hidden `.minigit/` directory.
+- Creates a hidden `.minigit/` directory and `.minigit/objects/` store for content blobs.
 - Initializes the `HEAD` file pointing to the default branch (`main`).
 
 ### 2. Compute File Hash
@@ -31,6 +31,7 @@ minigit add <filename>
 ```
 - Checks that the current directory is an initialized MiniGit repository.
 - Computes the file's hash using `calculateHash()`.
+- Saves the file's content into Content-Addressable Storage (`.minigit/objects/<hash>`) with deduplication.
 - Loads existing staged files from `.minigit/staging` into the custom in-memory `HashTable`.
 - Inserts or updates the file's entry (`filename → hash`) in the `HashTable`.
 - Persists all staged entries back to `.minigit/staging`.
@@ -66,7 +67,55 @@ Output:
 [C001] Initial commit
 ```
 
-### 5. Test Custom Hash Table
+### 5. Checkout / Restore Commit Snapshot
+```bash
+minigit checkout <commitId>
+```
+- Verifies `.minigit` repository and target commit exist.
+- Parses the snapshot file at `.minigit/commits/<commitId>`.
+- Retrieves file contents from `.minigit/objects/<hash>` and overwrites working files to restore exact state.
+- Synchronizes `.minigit/staging` with the checked-out snapshot.
+- Moves `.minigit/HEAD` pointer to `<commitId>`.
+
+Example:
+```bash
+minigit checkout C001
+```
+Output:
+```text
+Switched to commit C001 ("Initial commit")
+Restored 1 file(s).
+```
+
+### 6. View Commit History Log
+```bash
+minigit log
+```
+- Reads the current commit pointer from `.minigit/HEAD`.
+- Traverses backward along parent pointers (`HEAD -> parent -> parent -> NULL`).
+- Displays each commit's ID, message, parent link, and list of tracked files.
+
+Example:
+```bash
+minigit log
+```
+Output:
+```text
+commit C002
+Message: Version 2 - XYZ
+Parent:  C001
+Files (1): test.txt
+
+    |
+    v
+
+commit C001
+Message: Version 1 - ABC
+Parent:  NULL
+Files (1): test.txt
+```
+
+### 7. Test Custom Hash Table
 ```bash
 minigit test-hashtable
 ```
@@ -117,14 +166,13 @@ README.md|17705612757555493917
 4. **Linked List:** 
    - Used inside Hash Table buckets to chain colliding nodes.
    - Used in commit history where each commit acts as a node pointing to its `parent`.
-5. **File Handling & Serialization:** Persists in-memory data structures across program executions.
+5. **Content-Addressable Storage (CAS / Blobs):** Files are indexed and stored by their content hash (`.minigit/objects/<hash>`), providing inherent data deduplication and full snapshot rollback capabilities.
+6. **File Handling & Serialization:** Persists in-memory data structures across program executions.
 
 ---
 
 ## Planned Future Features (Not Yet Implemented)
-- Commit history log (`minigit log`)
 - Branches (`minigit branch`)
-- Checkout (`minigit checkout`)
 - Diff
 - Merge
 

@@ -1,6 +1,8 @@
 #include "HashTable.h"
 #include <iostream>
 
+using namespace std;
+
 // Constructor: Initialize all bucket pointers to nullptr
 HashTable::HashTable() {
     for (int i = 0; i < TABLE_SIZE; ++i) {
@@ -28,7 +30,7 @@ void HashTable::clear() {
 
 // Internal hash function: Converts a string key into a valid bucket index
 // Formula: index = (sum(c * 31^i)) % TABLE_SIZE
-int HashTable::hashFunction(const std::string& key) const {
+int HashTable::hashFunction(const string& key) const {
     unsigned long long hash = 0;
     const unsigned long long primeMultiplier = 31;
 
@@ -41,14 +43,14 @@ int HashTable::hashFunction(const std::string& key) const {
 }
 
 // Expose bucket index calculation for testing and viva demonstration
-int HashTable::getBucketIndex(const std::string& key) const {
+int HashTable::getBucketIndex(const string& key) const {
     return hashFunction(key);
 }
 
 // Insert operation:
 // If key already exists in the chain, update its value.
 // Otherwise, create a new Node and insert it at the head of the chain.
-void HashTable::insert(const std::string& key, const std::string& value) {
+void HashTable::insert(const string& key, const string& value) {
     int index = hashFunction(key);
 
     // 1. Search the bucket's linked list to check if key already exists
@@ -71,7 +73,7 @@ void HashTable::insert(const std::string& key, const std::string& value) {
 // Get operation:
 // Traverses the linked list at the key's bucket index.
 // Returns the value string if found, or an empty string "" if not found.
-std::string HashTable::get(const std::string& key) const {
+string HashTable::get(const string& key) const {
     int index = hashFunction(key);
 
     Node* current = buckets[index];
@@ -87,7 +89,7 @@ std::string HashTable::get(const std::string& key) const {
 
 // Contains operation:
 // Returns true if the key exists in the hash table, false otherwise.
-bool HashTable::contains(const std::string& key) const {
+bool HashTable::contains(const string& key) const {
     int index = hashFunction(key);
 
     Node* current = buckets[index];
@@ -104,7 +106,7 @@ bool HashTable::contains(const std::string& key) const {
 // Remove operation:
 // Searches for the key in its bucket list, updates linked list pointers,
 // and deletes the node to prevent memory leaks.
-bool HashTable::remove(const std::string& key) {
+bool HashTable::remove(const string& key) {
     int index = hashFunction(key);
 
     Node* current = buckets[index];
@@ -132,8 +134,8 @@ bool HashTable::remove(const std::string& key) {
 
 // Retrieves all key-value pairs stored across all buckets
 // Traverses each bucket and its associated linked-list chain
-std::vector<std::pair<std::string, std::string>> HashTable::getAll() const {
-    std::vector<std::pair<std::string, std::string>> items;
+vector<pair<string, string>> HashTable::getAll() const {
+    vector<pair<string, string>> items;
     for (int i = 0; i < TABLE_SIZE; ++i) {
         Node* current = buckets[i];
         while (current != nullptr) {
@@ -147,19 +149,19 @@ std::vector<std::pair<std::string, std::string>> HashTable::getAll() const {
 // Visualizes the buckets and chains (useful for college viva demonstrations)
 void HashTable::printTable() const {
     for (int i = 0; i < TABLE_SIZE; ++i) {
-        std::cout << "Bucket [" << i << "]: ";
+        cout << "Bucket [" << i << "]: ";
         Node* current = buckets[i];
         if (current == nullptr) {
-            std::cout << "empty";
+            cout << "empty";
         } else {
             while (current != nullptr) {
-                std::cout << "[" << current->key << " : " << current->value << "]";
+                cout << "[" << current->key << " : " << current->value << "]";
                 if (current->next != nullptr) {
-                    std::cout << " -> ";
+                    cout << " -> ";
                 }
                 current = current->next;
             }
         }
-        std::cout << std::endl;
+        cout << endl;
     }
 }

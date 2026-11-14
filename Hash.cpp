@@ -1,5 +1,7 @@
 #include "Hash.h"
 
+using namespace std;
+
 // Educational polynomial hash function:
 //
 // File content -> Hash function -> Hash value (fingerprint)
@@ -16,7 +18,7 @@
 // 2. Unsigned Integer Overflow:
 //    Using 'unsigned long long' provides well-defined modulo arithmetic on overflow,
 //    ensuring the computation is consistent and deterministic on all systems.
-std::string calculateHash(const std::string& content) {
+string calculateHash(const string& content) {
     unsigned long long hash = 0;
     const unsigned long long primeMultiplier = 31;
 
@@ -26,5 +28,5 @@ std::string calculateHash(const std::string& content) {
     }
 
     // Convert the numeric hash value to a decimal string
-    return std::to_string(hash);
+    return to_string(hash);
 }
