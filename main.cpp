@@ -3,6 +3,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <queue>
 #include <algorithm>
 #include <ctime>
 #include <system_error>
@@ -418,6 +419,34 @@ int getNextCommitNumber(const string& repoDir) {
     }
 
     return nextNum;
+}
+
+// Represents the parent commit pointers for a commit in the DAG
+struct CommitParents {
+    string parent1 = "NULL";
+    string parent2 = "NULL";
+};
+
+// Reads both primary parent and optional merge parent from a commit object file
+// DSA Concept: Directed Acyclic Graph (DAG) node incoming edges
+// Time Complexity: O(H) where H is the header lines count
+CommitParents getCommitParents(const string& commitId) {
+    CommitParents p;
+    if (commitId.empty() || commitId == "NULL" || commitId == "main") return p;
+    string path = ".minigit/commits/" + commitId;
+    ifstream in(path);
+    if (!in.is_open()) return p;
+    string line;
+    while (getline(in, line)) {
+        trimCarriageReturn(line);
+        if (line.empty()) break; // End of header section
+        if (line.rfind("parent2=", 0) == 0) {
+            p.parent2 = line.substr(8);
+        } else if (line.rfind("parent=", 0) == 0) {
+            p.parent1 = line.substr(7);
+        }
+    }
+    return p;
 }
 
 // ============================================================================
@@ -871,12 +900,37 @@ void createCommit(const string& rawMessage) {
 
     migrateOldRepository(repoDir);
 
-    if (rawMessage.find('\n') != string::npos || rawMessage.find('\r') != string::npos) {
+    string mergeHeadPath = repoDir + "/MERGE_HEAD";
+    bool isMerge = fs::exists(mergeHeadPath, ec);
+    string parent2 = "NULL";
+    string mergeBranchName = "";
+
+    if (isMerge) {
+        ifstream mhIn(mergeHeadPath);
+        if (mhIn.is_open()) {
+            string pLine, bLine;
+            if (getline(mhIn, pLine)) {
+                trimCarriageReturn(pLine);
+                parent2 = pLine;
+            }
+            if (getline(mhIn, bLine)) {
+                trimCarriageReturn(bLine);
+                mergeBranchName = bLine;
+            }
+            mhIn.close();
+        }
+    }
+
+    string message = rawMessage;
+    if (message.empty() && isMerge) {
+        message = "Merge branch '" + (mergeBranchName.empty() ? "merge" : mergeBranchName) + "'";
+    }
+
+    if (message.find('\n') != string::npos || message.find('\r') != string::npos) {
         cerr << "Error: Commit message cannot contain newline characters." << endl;
         return;
     }
 
-    string message = rawMessage;
     size_t first = message.find_first_not_of(" \t");
     if (first == string::npos) {
         cerr << "Error: Commit message cannot be empty or whitespace-only." << endl;
@@ -902,7 +956,7 @@ void createCommit(const string& rawMessage) {
         parent = "NULL";
     }
 
-    if (parent != "NULL") {
+    if (!isMerge && parent != "NULL") {
         HashTable parentTable = loadSnapshot(parent);
         if (commitTable.size() == parentTable.size()) {
             bool identical = true;
@@ -945,6 +999,9 @@ void createCommit(const string& rawMessage) {
     commitOut << "id=" << commitId << "\n";
     commitOut << "message=" << message << "\n";
     commitOut << "parent=" << parent << "\n";
+    if (isMerge && parent2 != "NULL" && !parent2.empty()) {
+        commitOut << "parent2=" << parent2 << "\n";
+    }
     commitOut << "author=" << author << "\n";
     commitOut << "timestamp=" << timestamp << "\n\n";
 
@@ -952,6 +1009,10 @@ void createCommit(const string& rawMessage) {
         commitOut << entry.first << "|" << entry.second << "\n";
     }
     commitOut.close();
+
+    if (isMerge) {
+        fs::remove(mergeHeadPath, ec);
+    }
 
     string currentBranch = getCurrentBranchName(repoDir);
     if (!currentBranch.empty()) {
@@ -1005,6 +1066,7 @@ void showCommit(const string& commitId) {
     string id = commitId;
     string message = "";
     string parent = "NULL";
+    string parent2 = "NULL";
     string author = "Unknown";
     string timestamp = "Unknown";
     vector<pair<string, string>> files;
@@ -1018,6 +1080,8 @@ void showCommit(const string& commitId) {
             id = line.substr(3);
         } else if (line.rfind("message=", 0) == 0) {
             message = line.substr(8);
+        } else if (line.rfind("parent2=", 0) == 0) {
+            parent2 = line.substr(8);
         } else if (line.rfind("parent=", 0) == 0) {
             parent = line.substr(7);
         } else if (line.rfind("author=", 0) == 0) {
@@ -1037,6 +1101,9 @@ void showCommit(const string& commitId) {
     cout << "Author:    " << author << endl;
     cout << "Date:      " << timestamp << endl;
     cout << "Parent:    " << parent << endl;
+    if (parent2 != "NULL" && !parent2.empty()) {
+        cout << "Parent2:   " << parent2 << endl;
+    }
     cout << endl;
     cout << "    " << message << endl;
     cout << endl;
@@ -1417,6 +1484,7 @@ void printCommitLog(bool oneline) {
         string id = currentCommit;
         string message = "";
         string parent = "NULL";
+        string parent2 = "NULL";
         vector<string> files;
 
         string line;
@@ -1428,6 +1496,8 @@ void printCommitLog(bool oneline) {
                 id = line.substr(3);
             } else if (line.rfind("message=", 0) == 0) {
                 message = line.substr(8);
+            } else if (line.rfind("parent2=", 0) == 0) {
+                parent2 = line.substr(8);
             } else if (line.rfind("parent=", 0) == 0) {
                 parent = line.substr(7);
             } else if (line.rfind("author=", 0) == 0 || line.rfind("timestamp=", 0) == 0) {
@@ -1450,8 +1520,14 @@ void printCommitLog(bool oneline) {
             first = false;
 
             cout << "commit " << id << endl;
+            if (parent2 != "NULL" && !parent2.empty()) {
+                cout << "Merge:   " << parent << " " << parent2 << endl;
+            }
             cout << "Message: " << message << endl;
             cout << "Parent:  " << parent << endl;
+            if (parent2 != "NULL" && !parent2.empty()) {
+                cout << "Parent2: " << parent2 << endl;
+            }
             cout << "Files (" << files.size() << "): ";
             for (size_t i = 0; i < files.size(); ++i) {
                 cout << files[i] << (i + 1 < files.size() ? ", " : "");
@@ -1863,6 +1939,910 @@ void diffCommits(const string& commitA, const string& commitB) {
     }
 }
 
+// ============================================================================
+// Phase 10 / Task 5: Three-Way Merge, Lowest Common Ancestor (LCA) & DAG Graph
+// ============================================================================
+
+struct DiffChunk {
+    int start = 0; // line index in base (0 .. m)
+    int len = 0;   // lines in base replaced (0 for pure insertion)
+    vector<string> newLines;
+};
+
+// Extracts contiguous replacement/insertion/deletion chunks from diff edit script
+// Time Complexity: O(K) where K is diff operations count
+vector<DiffChunk> extractChunks(const vector<DiffOp>& ops) {
+    vector<DiffChunk> chunks;
+    int baseIdx = 0;
+    size_t i = 0;
+    while (i < ops.size()) {
+        if (ops[i].type == DiffType::UNCHANGED) {
+            baseIdx++;
+            i++;
+        } else {
+            DiffChunk chunk;
+            chunk.start = baseIdx;
+            chunk.len = 0;
+            while (i < ops.size() && ops[i].type != DiffType::UNCHANGED) {
+                if (ops[i].type == DiffType::REMOVED) {
+                    chunk.len++;
+                    baseIdx++;
+                } else if (ops[i].type == DiffType::ADDED) {
+                    chunk.newLines.push_back(ops[i].text);
+                }
+                i++;
+            }
+            chunks.push_back(chunk);
+        }
+    }
+    return chunks;
+}
+
+// Merges contentBase, contentOurs, contentTheirs using 3-way line reconciliation
+// Writes conflict markers (<<<<<<< ours / ======= / >>>>>>> theirs) if lines clash
+// Time Complexity: O(m * n) for diffLines + O(m) for chunk reconciliation
+bool mergeFileLines(const string& contentBase,
+                    const string& contentOurs,
+                    const string& contentTheirs,
+                    string& mergedOutput) {
+    vector<string> baseLines = splitFileLines(contentBase);
+    vector<string> oursLines = splitFileLines(contentOurs);
+    vector<string> theirsLines = splitFileLines(contentTheirs);
+
+    // If ours and theirs are identical: clean merge
+    if (oursLines == theirsLines) {
+        mergedOutput = contentOurs;
+        return true;
+    }
+
+    // If ours is identical to base: take theirs
+    if (baseLines == oursLines) {
+        mergedOutput = contentTheirs;
+        return true;
+    }
+
+    // If theirs is identical to base: take ours
+    if (baseLines == theirsLines) {
+        mergedOutput = contentOurs;
+        return true;
+    }
+
+    // If base is empty (file newly added on both sides differently)
+    if (baseLines.empty()) {
+        ostringstream oss;
+        oss << "<<<<<<< ours\n";
+        for (const auto& l : oursLines) oss << l << "\n";
+        oss << "=======\n";
+        for (const auto& l : theirsLines) oss << l << "\n";
+        oss << ">>>>>>> theirs\n";
+        mergedOutput = oss.str();
+        return false;
+    }
+
+    vector<DiffChunk> chunksO = extractChunks(diffLines(baseLines, oursLines));
+    vector<DiffChunk> chunksT = extractChunks(diffLines(baseLines, theirsLines));
+
+    int cur = 0;
+    size_t iO = 0;
+    size_t iT = 0;
+    bool hasConflict = false;
+    vector<string> resultLines;
+
+    while (iO < chunksO.size() || iT < chunksT.size()) {
+        if (iO < chunksO.size() && iT < chunksT.size()) {
+            int sO = chunksO[iO].start;
+            int eO = chunksO[iO].start + chunksO[iO].len;
+            int sT = chunksT[iT].start;
+            int eT = chunksT[iT].start + chunksT[iT].len;
+
+            // Check non-overlapping cases
+            if (eO < sT || (eO == sT && (chunksO[iO].len > 0 || chunksT[iT].len > 0))) {
+                while (cur < sO) {
+                    resultLines.push_back(baseLines[cur++]);
+                }
+                for (const auto& l : chunksO[iO].newLines) {
+                    resultLines.push_back(l);
+                }
+                cur = eO;
+                iO++;
+            } else if (eT < sO || (eT == sO && (chunksO[iO].len > 0 || chunksT[iT].len > 0))) {
+                while (cur < sT) {
+                    resultLines.push_back(baseLines[cur++]);
+                }
+                for (const auto& l : chunksT[iT].newLines) {
+                    resultLines.push_back(l);
+                }
+                cur = eT;
+                iT++;
+            } else {
+                // Overlapping region
+                int regStart = min(sO, sT);
+                while (cur < regStart) {
+                    resultLines.push_back(baseLines[cur++]);
+                }
+                int regEnd = max(eO, eT);
+
+                // Collect chained overlapping chunks
+                size_t oStart = iO, tStart = iT;
+                bool expanded = true;
+                while (expanded) {
+                    expanded = false;
+                    if (iO + 1 < chunksO.size() && chunksO[iO + 1].start <= regEnd) {
+                        iO++;
+                        regEnd = max(regEnd, chunksO[iO].start + chunksO[iO].len);
+                        expanded = true;
+                    }
+                    if (iT + 1 < chunksT.size() && chunksT[iT + 1].start <= regEnd) {
+                        iT++;
+                        regEnd = max(regEnd, chunksT[iT].start + chunksT[iT].len);
+                        expanded = true;
+                    }
+                }
+
+                // Reconstruct ours version in [regStart, regEnd)
+                vector<string> oReg;
+                int trackO = regStart;
+                for (size_t k = oStart; k <= iO; ++k) {
+                    while (trackO < chunksO[k].start) {
+                        oReg.push_back(baseLines[trackO++]);
+                    }
+                    for (const auto& l : chunksO[k].newLines) oReg.push_back(l);
+                    trackO = chunksO[k].start + chunksO[k].len;
+                }
+                while (trackO < regEnd) oReg.push_back(baseLines[trackO++]);
+
+                // Reconstruct theirs version in [regStart, regEnd)
+                vector<string> tReg;
+                int trackT = regStart;
+                for (size_t k = tStart; k <= iT; ++k) {
+                    while (trackT < chunksT[k].start) {
+                        tReg.push_back(baseLines[trackT++]);
+                    }
+                    for (const auto& l : chunksT[k].newLines) tReg.push_back(l);
+                    trackT = chunksT[k].start + chunksT[k].len;
+                }
+                while (trackT < regEnd) tReg.push_back(baseLines[trackT++]);
+
+                if (oReg == tReg) {
+                    for (const auto& l : oReg) resultLines.push_back(l);
+                } else {
+                    hasConflict = true;
+                    resultLines.push_back("<<<<<<< ours");
+                    for (const auto& l : oReg) resultLines.push_back(l);
+                    resultLines.push_back("=======");
+                    for (const auto& l : tReg) resultLines.push_back(l);
+                    resultLines.push_back(">>>>>>> theirs");
+                }
+
+                cur = regEnd;
+                iO++;
+                iT++;
+            }
+        } else if (iO < chunksO.size()) {
+            int sO = chunksO[iO].start;
+            int eO = chunksO[iO].start + chunksO[iO].len;
+            while (cur < sO) {
+                resultLines.push_back(baseLines[cur++]);
+            }
+            for (const auto& l : chunksO[iO].newLines) {
+                resultLines.push_back(l);
+            }
+            cur = eO;
+            iO++;
+        } else {
+            int sT = chunksT[iT].start;
+            int eT = chunksT[iT].start + chunksT[iT].len;
+            while (cur < sT) {
+                resultLines.push_back(baseLines[cur++]);
+            }
+            for (const auto& l : chunksT[iT].newLines) {
+                resultLines.push_back(l);
+            }
+            cur = eT;
+            iT++;
+        }
+    }
+
+    while (cur < static_cast<int>(baseLines.size())) {
+        resultLines.push_back(baseLines[cur++]);
+    }
+
+    ostringstream oss;
+    for (const auto& l : resultLines) {
+        oss << l << "\n";
+    }
+    mergedOutput = oss.str();
+    return !hasConflict;
+}
+
+// Finds the lowest common ancestor (merge base) between two commits in the DAG
+// DSA Concept: Lowest Common Ancestor (LCA) in a Directed Acyclic Graph (DAG)
+// History is a DAG, not just a list, once merges exist (commits can have two parents).
+// Uses BFS (std::queue) from commit A collecting all ancestors into a custom HashTable (set),
+// then BFS from commit B to find the first common ancestor node.
+// Time Complexity:  O(V + E) where V = commits, E = parent references
+// Space Complexity: O(V) for queue and ancestor HashTable
+string findMergeBase(const string& commitA, const string& commitB) {
+    if (commitA.empty() || commitB.empty() || commitA == "NULL" || commitB == "NULL") {
+        return "";
+    }
+    if (commitA == commitB) {
+        return commitA;
+    }
+
+    // 1. BFS from commit A collecting all reachable ancestors into HashTable
+    HashTable ancestorsA;
+    queue<string> qA;
+    qA.push(commitA);
+    ancestorsA.insert(commitA, "1");
+
+    while (!qA.empty()) {
+        string curr = qA.front();
+        qA.pop();
+
+        CommitParents cp = getCommitParents(curr);
+        if (cp.parent1 != "NULL" && !cp.parent1.empty() && !ancestorsA.contains(cp.parent1)) {
+            ancestorsA.insert(cp.parent1, "1");
+            qA.push(cp.parent1);
+        }
+        if (cp.parent2 != "NULL" && !cp.parent2.empty() && !ancestorsA.contains(cp.parent2)) {
+            ancestorsA.insert(cp.parent2, "1");
+            qA.push(cp.parent2);
+        }
+    }
+
+    // 2. BFS from commit B to locate the nearest ancestor that was also reachable from A
+    queue<string> qB;
+    HashTable visitedB;
+    qB.push(commitB);
+    visitedB.insert(commitB, "1");
+
+    while (!qB.empty()) {
+        string curr = qB.front();
+        qB.pop();
+
+        if (ancestorsA.contains(curr)) {
+            return curr;
+        }
+
+        CommitParents cp = getCommitParents(curr);
+        if (cp.parent1 != "NULL" && !cp.parent1.empty() && !visitedB.contains(cp.parent1)) {
+            visitedB.insert(cp.parent1, "1");
+            qB.push(cp.parent1);
+        }
+        if (cp.parent2 != "NULL" && !cp.parent2.empty() && !visitedB.contains(cp.parent2)) {
+            visitedB.insert(cp.parent2, "1");
+            qB.push(cp.parent2);
+        }
+    }
+
+    return "";
+}
+
+// Performs three-way branch merge: minigit merge <targetBranch>
+// Supports fast-forward, already-up-to-date, clean 3-way merge, and conflict detection
+// Time Complexity: O(F * m * n) for 3-way file reconciliation
+void mergeBranch(const string& targetBranch) {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    string mergeHeadPath = repoDir + "/MERGE_HEAD";
+    if (fs::exists(mergeHeadPath, ec)) {
+        cerr << "Error: A merge is already in progress. Please commit or use 'minigit merge --abort'." << endl;
+        return;
+    }
+
+    string currentBranch = getCurrentBranchName(repoDir);
+    if (currentBranch.empty()) {
+        cerr << "Error: Cannot merge in detached HEAD state." << endl;
+        return;
+    }
+
+    string currentCommit = resolveCurrentCommit(repoDir);
+    if (currentCommit.empty() || currentCommit == "NULL") {
+        cerr << "Error: No commits in current branch to merge with." << endl;
+        return;
+    }
+
+    HashTable branchTable = loadBranchTable(repoDir);
+    if (!branchTable.contains(targetBranch)) {
+        cerr << "Error: Branch '" << targetBranch << "' not found." << endl;
+        return;
+    }
+
+    if (targetBranch == currentBranch) {
+        cout << "Already up to date." << endl;
+        return;
+    }
+
+    string targetCommit = branchTable.get(targetBranch);
+    if (targetCommit.empty() || targetCommit == "NULL") {
+        cerr << "Error: Target branch '" << targetBranch << "' has no commits." << endl;
+        return;
+    }
+
+    string mergeBase = findMergeBase(currentCommit, targetCommit);
+    if (mergeBase.empty()) {
+        cerr << "Error: No common ancestor found between " << currentCommit << " and " << targetCommit << "." << endl;
+        return;
+    }
+
+    if (mergeBase == targetCommit) {
+        cout << "Already up to date." << endl;
+        return;
+    }
+
+    if (mergeBase == currentCommit) {
+        // Fast-forward merge
+        cout << "Updating " << currentCommit << ".." << targetCommit << endl;
+        cout << "Fast-forward" << endl;
+
+        string branchFile = repoDir + "/refs/heads/" + currentBranch;
+        ofstream bOut(branchFile);
+        if (bOut.is_open()) {
+            bOut << targetCommit << "\n";
+            bOut.close();
+        }
+
+        // Restore files from target commit
+        HashTable targetSnapshot = loadSnapshot(targetCommit);
+        HashTable currentSnapshot = loadSnapshot(currentCommit);
+
+        for (const auto& entry : currentSnapshot.getAll()) {
+            if (!targetSnapshot.contains(entry.first)) {
+                if (fs::exists(entry.first, ec)) {
+                    fs::remove(entry.first, ec);
+                }
+            }
+        }
+
+        for (const auto& entry : targetSnapshot.getAll()) {
+            string blobPath = repoDir + "/objects/" + entry.second;
+            string content;
+            if (readFileToString(blobPath, content)) {
+                fs::path fp(entry.first);
+                if (fp.has_parent_path()) {
+                    fs::create_directories(fp.parent_path().string(), ec);
+                }
+                ofstream out(entry.first, ios::binary);
+                if (out.is_open()) {
+                    out << content;
+                    out.close();
+                }
+            }
+        }
+
+        saveTableToFile(repoDir + "/staging", targetSnapshot);
+        return;
+    }
+
+    // Three-Way Merge
+    HashTable baseSnapshot = loadSnapshot(mergeBase);
+    HashTable oursSnapshot = loadSnapshot(currentCommit);
+    HashTable theirsSnapshot = loadSnapshot(targetCommit);
+
+    vector<string> allFiles;
+    for (const auto& p : baseSnapshot.getAll()) allFiles.push_back(p.first);
+    for (const auto& p : oursSnapshot.getAll()) {
+        if (!baseSnapshot.contains(p.first)) allFiles.push_back(p.first);
+    }
+    for (const auto& p : theirsSnapshot.getAll()) {
+        if (!baseSnapshot.contains(p.first) && !oursSnapshot.contains(p.first)) {
+            allFiles.push_back(p.first);
+        }
+    }
+    sort(allFiles.begin(), allFiles.end());
+
+    HashTable mergedTable;
+    bool hasConflict = false;
+
+    for (const auto& file : allFiles) {
+        bool inBase = baseSnapshot.contains(file);
+        bool inOurs = oursSnapshot.contains(file);
+        bool inTheirs = theirsSnapshot.contains(file);
+
+        string hashBase = inBase ? baseSnapshot.get(file) : "";
+        string hashOurs = inOurs ? oursSnapshot.get(file) : "";
+        string hashTheirs = inTheirs ? theirsSnapshot.get(file) : "";
+
+        if (inOurs && inTheirs && hashOurs == hashTheirs) {
+            // Same in ours and theirs -> keep
+            mergedTable.insert(file, hashOurs);
+        } else if (inBase && inOurs && inTheirs) {
+            if (hashOurs == hashBase && hashTheirs != hashBase) {
+                // Changed only in theirs -> take theirs
+                mergedTable.insert(file, hashTheirs);
+                string contentTheirs;
+                readFileToString(repoDir + "/objects/" + hashTheirs, contentTheirs);
+                ofstream out(file, ios::binary);
+                if (out.is_open()) { out << contentTheirs; out.close(); }
+            } else if (hashTheirs == hashBase && hashOurs != hashBase) {
+                // Changed only in ours -> keep ours
+                mergedTable.insert(file, hashOurs);
+            } else {
+                // Changed on both sides differently
+                string contentBase, contentOurs, contentTheirs;
+                readFileToString(repoDir + "/objects/" + hashBase, contentBase);
+                readFileToString(repoDir + "/objects/" + hashOurs, contentOurs);
+                readFileToString(repoDir + "/objects/" + hashTheirs, contentTheirs);
+
+                string mergedContent;
+                bool clean = mergeFileLines(contentBase, contentOurs, contentTheirs, mergedContent);
+                ofstream out(file, ios::binary);
+                if (out.is_open()) { out << mergedContent; out.close(); }
+
+                if (clean) {
+                    string newHash = calculateHash(mergedContent);
+                    string objPath = repoDir + "/objects/" + newHash;
+                    if (!fs::exists(objPath, ec)) {
+                        ofstream blobOut(objPath, ios::binary);
+                        if (blobOut.is_open()) { blobOut << mergedContent; blobOut.close(); }
+                    }
+                    mergedTable.insert(file, newHash);
+                } else {
+                    hasConflict = true;
+                    cout << "CONFLICT (content): Merge conflict in " << file << endl;
+                }
+            }
+        } else if (!inBase && inOurs && !inTheirs) {
+            // Added only in ours -> keep ours
+            mergedTable.insert(file, hashOurs);
+        } else if (!inBase && !inOurs && inTheirs) {
+            // Added only in theirs -> take theirs
+            mergedTable.insert(file, hashTheirs);
+            string contentTheirs;
+            readFileToString(repoDir + "/objects/" + hashTheirs, contentTheirs);
+            fs::path fp(file);
+            if (fp.has_parent_path()) {
+                fs::create_directories(fp.parent_path().string(), ec);
+            }
+            ofstream out(file, ios::binary);
+            if (out.is_open()) { out << contentTheirs; out.close(); }
+        } else if (!inBase && inOurs && inTheirs) {
+            // Added on both sides
+            if (hashOurs == hashTheirs) {
+                mergedTable.insert(file, hashOurs);
+            } else {
+                string contentOurs, contentTheirs;
+                readFileToString(repoDir + "/objects/" + hashOurs, contentOurs);
+                readFileToString(repoDir + "/objects/" + hashTheirs, contentTheirs);
+                string mergedContent;
+                bool clean = mergeFileLines("", contentOurs, contentTheirs, mergedContent);
+                ofstream out(file, ios::binary);
+                if (out.is_open()) { out << mergedContent; out.close(); }
+                if (clean) {
+                    string newHash = calculateHash(mergedContent);
+                    string objPath = repoDir + "/objects/" + newHash;
+                    if (!fs::exists(objPath, ec)) {
+                        ofstream blobOut(objPath, ios::binary);
+                        if (blobOut.is_open()) { blobOut << mergedContent; blobOut.close(); }
+                    }
+                    mergedTable.insert(file, newHash);
+                } else {
+                    hasConflict = true;
+                    cout << "CONFLICT (add/add): Merge conflict in " << file << endl;
+                }
+            }
+        } else if (inBase && inOurs && !inTheirs) {
+            if (hashOurs == hashBase) {
+                // Deleted in theirs, unchanged in ours -> apply deletion
+                if (fs::exists(file, ec)) {
+                    fs::remove(file, ec);
+                }
+            } else {
+                hasConflict = true;
+                cout << "CONFLICT (modify/delete): " << file << " modified in ours and deleted in theirs." << endl;
+            }
+        } else if (inBase && !inOurs && inTheirs) {
+            if (hashTheirs == hashBase) {
+                // Deleted in ours, unchanged in theirs -> keep deleted
+            } else {
+                hasConflict = true;
+                cout << "CONFLICT (modify/delete): " << file << " deleted in ours and modified in theirs." << endl;
+                string contentTheirs;
+                readFileToString(repoDir + "/objects/" + hashTheirs, contentTheirs);
+                ofstream out(file, ios::binary);
+                if (out.is_open()) { out << contentTheirs; out.close(); }
+            }
+        }
+    }
+
+    if (hasConflict) {
+        // Record merge state in .minigit/MERGE_HEAD
+        ofstream mhOut(mergeHeadPath);
+        if (mhOut.is_open()) {
+            mhOut << targetCommit << "\n" << targetBranch << "\n";
+            mhOut.close();
+        }
+        cout << "Automatic merge failed; fix conflicts and then commit the result." << endl;
+    } else {
+        // Auto-create merge commit
+        saveTableToFile(repoDir + "/staging", mergedTable);
+
+        int nextNum = getNextCommitNumber(repoDir);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "C%03d", nextNum);
+        string newCommitId = buf;
+
+        string author = getUserConfig(repoDir, "user.name", "Unknown <unknown@minigit>");
+        string timestamp = getCurrentTimestamp();
+
+        string commitPath = repoDir + "/commits/" + newCommitId;
+        ofstream cOut(commitPath);
+        if (cOut.is_open()) {
+            cOut << "id=" << newCommitId << "\n";
+            cOut << "message=Merge branch '" << targetBranch << "'\n";
+            cOut << "parent=" << currentCommit << "\n";
+            cOut << "parent2=" << targetCommit << "\n";
+            cOut << "author=" << author << "\n";
+            cOut << "timestamp=" << timestamp << "\n\n";
+
+            for (const auto& entry : mergedTable.getAll()) {
+                cOut << entry.first << "|" << entry.second << "\n";
+            }
+            cOut.close();
+        }
+
+        string branchFile = repoDir + "/refs/heads/" + currentBranch;
+        ofstream bOut(branchFile);
+        if (bOut.is_open()) {
+            bOut << newCommitId << "\n";
+            bOut.close();
+        }
+
+        cout << "Merge made by the 'three-way' strategy." << endl;
+        cout << "[" << newCommitId << "] Merge branch '" << targetBranch << "'" << endl;
+    }
+}
+
+// Aborts an in-progress merge conflict, restoring the working tree and staging area
+// to the snapshot of HEAD, and removing .minigit/MERGE_HEAD
+void abortMerge() {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    string mergeHeadPath = repoDir + "/MERGE_HEAD";
+    if (!fs::exists(mergeHeadPath, ec)) {
+        cerr << "Error: There is no merge to abort (MERGE_HEAD missing)." << endl;
+        return;
+    }
+
+    string currentCommit = resolveCurrentCommit(repoDir);
+    if (currentCommit.empty() || currentCommit == "NULL") {
+        cerr << "Error: Unable to resolve HEAD to abort merge." << endl;
+        return;
+    }
+
+    HashTable headSnapshot = loadSnapshot(currentCommit);
+
+    // Restore files from HEAD snapshot
+    for (const auto& entry : headSnapshot.getAll()) {
+        const string& filename = entry.first;
+        const string& hash = entry.second;
+        string blobPath = repoDir + "/objects/" + hash;
+        string content;
+        if (readFileToString(blobPath, content)) {
+            fs::path filePath(filename);
+            if (filePath.has_parent_path()) {
+                fs::create_directories(filePath.parent_path().string(), ec);
+            }
+            ofstream out(filename, ios::binary);
+            if (out.is_open()) {
+                out << content;
+                out.close();
+            }
+        }
+    }
+
+    // Reset staging area to HEAD snapshot
+    saveTableToFile(repoDir + "/staging", headSnapshot);
+
+    // Remove MERGE_HEAD
+    fs::remove(mergeHeadPath, ec);
+
+    cout << "Merge aborted." << endl;
+}
+
+// Prints an ASCII graph of the commit DAG using Kahn's topological sort and DFS/BFS
+// DSA Concept: Topological Sort (Kahn's Algorithm) and DAG ASCII layout
+// Time Complexity: O(V + E) where V is commits count, E is parent links
+void printCommitGraph() {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    string headBranch = getCurrentBranchName(repoDir);
+    string headCommit = resolveCurrentCommit(repoDir);
+    HashTable branchTable = loadBranchTable(repoDir);
+
+    if (headCommit.empty() || headCommit == "NULL" || headCommit == "main") {
+        cout << "No commits yet." << endl;
+        return;
+    }
+
+    // 1. Collect all reachable commits in the DAG
+    HashTable reachable;
+    queue<string> q;
+
+    if (!headCommit.empty() && headCommit != "NULL") {
+        reachable.insert(headCommit, "1");
+        q.push(headCommit);
+    }
+
+    for (const auto& b : branchTable.getAll()) {
+        if (!b.second.empty() && b.second != "NULL" && !reachable.contains(b.second)) {
+            reachable.insert(b.second, "1");
+            q.push(b.second);
+        }
+    }
+
+    while (!q.empty()) {
+        string curr = q.front();
+        q.pop();
+
+        CommitParents cp = getCommitParents(curr);
+        if (cp.parent1 != "NULL" && !cp.parent1.empty() && !reachable.contains(cp.parent1)) {
+            reachable.insert(cp.parent1, "1");
+            q.push(cp.parent1);
+        }
+        if (cp.parent2 != "NULL" && !cp.parent2.empty() && !reachable.contains(cp.parent2)) {
+            reachable.insert(cp.parent2, "1");
+            q.push(cp.parent2);
+        }
+    }
+
+    auto allCommitsList = reachable.getAll();
+    if (allCommitsList.empty()) {
+        cout << "No commits yet." << endl;
+        return;
+    }
+
+    // 2. Build in-memory metadata for each commit node
+    struct NodeMeta {
+        string id;
+        string message;
+        string parent1;
+        string parent2;
+        vector<string> refs;
+        int inDegree = 0;
+    };
+
+    vector<NodeMeta> nodes;
+    for (const auto& entry : allCommitsList) {
+        string cid = entry.first;
+        NodeMeta nm;
+        nm.id = cid;
+        nm.parent1 = "NULL";
+        nm.parent2 = "NULL";
+
+        string cPath = repoDir + "/commits/" + cid;
+        ifstream in(cPath);
+        if (in.is_open()) {
+            string line;
+            while (getline(in, line)) {
+                trimCarriageReturn(line);
+                if (line.empty()) break;
+                if (line.rfind("message=", 0) == 0) {
+                    nm.message = line.substr(8);
+                } else if (line.rfind("parent2=", 0) == 0) {
+                    nm.parent2 = line.substr(8);
+                } else if (line.rfind("parent=", 0) == 0) {
+                    nm.parent1 = line.substr(7);
+                }
+            }
+            in.close();
+        }
+
+        // Attach refs
+        if (cid == headCommit) {
+            if (!headBranch.empty()) {
+                nm.refs.push_back("HEAD -> " + headBranch);
+            } else {
+                nm.refs.push_back("HEAD");
+            }
+        }
+        for (const auto& b : branchTable.getAll()) {
+            if (b.second == cid) {
+                if (b.first != headBranch) {
+                    nm.refs.push_back(b.first);
+                }
+            }
+        }
+
+        nodes.push_back(nm);
+    }
+
+    // 3. Compute in-degrees (child count)
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (nodes[i].parent1 != "NULL" && !nodes[i].parent1.empty()) {
+            for (size_t j = 0; j < nodes.size(); ++j) {
+                if (nodes[j].id == nodes[i].parent1) {
+                    nodes[j].inDegree++;
+                    break;
+                }
+            }
+        }
+        if (nodes[i].parent2 != "NULL" && !nodes[i].parent2.empty()) {
+            for (size_t j = 0; j < nodes.size(); ++j) {
+                if (nodes[j].id == nodes[i].parent2) {
+                    nodes[j].inDegree++;
+                    break;
+                }
+            }
+        }
+    }
+
+    // 4. Kahn's Topological Sort (children first, parents after)
+    vector<int> readyIndices;
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (nodes[i].inDegree == 0) {
+            readyIndices.push_back(static_cast<int>(i));
+        }
+    }
+
+    vector<int> topoIndices;
+    while (!readyIndices.empty()) {
+        int bestIdx = 0;
+        for (size_t k = 1; k < readyIndices.size(); ++k) {
+            int idxCurr = readyIndices[k];
+            int idxBest = readyIndices[bestIdx];
+            if (nodes[idxCurr].id == headCommit) {
+                bestIdx = static_cast<int>(k);
+            } else if (nodes[idxBest].id != headCommit && nodes[idxCurr].id > nodes[idxBest].id) {
+                bestIdx = static_cast<int>(k);
+            }
+        }
+
+        int currNodeIdx = readyIndices[bestIdx];
+        readyIndices.erase(readyIndices.begin() + bestIdx);
+        topoIndices.push_back(currNodeIdx);
+
+        string p1 = nodes[currNodeIdx].parent1;
+        string p2 = nodes[currNodeIdx].parent2;
+
+        if (p1 != "NULL" && !p1.empty()) {
+            for (size_t j = 0; j < nodes.size(); ++j) {
+                if (nodes[j].id == p1) {
+                    nodes[j].inDegree--;
+                    if (nodes[j].inDegree == 0) {
+                        readyIndices.push_back(static_cast<int>(j));
+                    }
+                    break;
+                }
+            }
+        }
+        if (p2 != "NULL" && !p2.empty()) {
+            for (size_t j = 0; j < nodes.size(); ++j) {
+                if (nodes[j].id == p2) {
+                    nodes[j].inDegree--;
+                    if (nodes[j].inDegree == 0) {
+                        readyIndices.push_back(static_cast<int>(j));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // 5. Draw ASCII Graph
+    vector<string> activeCols;
+
+    for (int idx : topoIndices) {
+        const NodeMeta& node = nodes[idx];
+
+        int col = -1;
+        for (size_t c = 0; c < activeCols.size(); ++c) {
+            if (activeCols[c] == node.id) {
+                col = static_cast<int>(c);
+                break;
+            }
+        }
+
+        if (col == -1) {
+            activeCols.push_back(node.id);
+            col = static_cast<int>(activeCols.size() - 1);
+        }
+
+        // Commit Node Line
+        string nodeLine = "";
+        for (size_t c = 0; c < activeCols.size(); ++c) {
+            if (static_cast<int>(c) == col) {
+                nodeLine += "* ";
+            } else {
+                nodeLine += "| ";
+            }
+        }
+        nodeLine += "  commit " + node.id;
+        if (!node.refs.empty()) {
+            nodeLine += " (";
+            for (size_t r = 0; r < node.refs.size(); ++r) {
+                nodeLine += node.refs[r] + (r + 1 < node.refs.size() ? ", " : "");
+            }
+            nodeLine += ")";
+        }
+        cout << nodeLine << endl;
+
+        // Merge details if merge commit
+        bool isMerge = (node.parent2 != "NULL" && !node.parent2.empty());
+        if (isMerge) {
+            string mergeLine = "";
+            for (size_t c = 0; c < activeCols.size(); ++c) {
+                if (static_cast<int>(c) == col) {
+                    mergeLine += "|\\";
+                } else {
+                    mergeLine += "| ";
+                }
+            }
+            mergeLine += "  Merge: " + node.parent1 + " " + node.parent2;
+            cout << mergeLine << endl;
+        }
+
+        // Message line
+        string msgLine = "";
+        for (size_t c = 0; c < activeCols.size(); ++c) {
+            msgLine += "| ";
+        }
+        if (isMerge) {
+            msgLine += "| ";
+        }
+        msgLine += "Message: " + node.message;
+        cout << msgLine << endl;
+
+        // Update active columns
+        if (isMerge) {
+            activeCols[col] = node.parent1;
+            activeCols.insert(activeCols.begin() + col + 1, node.parent2);
+        } else if (node.parent1 != "NULL" && !node.parent1.empty()) {
+            int existingCol = -1;
+            for (size_t c = 0; c < activeCols.size(); ++c) {
+                if (static_cast<int>(c) != col && activeCols[c] == node.parent1) {
+                    existingCol = static_cast<int>(c);
+                    break;
+                }
+            }
+            if (existingCol != -1) {
+                string joinLine = "";
+                for (size_t c = 0; c < activeCols.size(); ++c) {
+                    if (static_cast<int>(c) == col) {
+                        joinLine += "|/";
+                    } else {
+                        joinLine += "| ";
+                    }
+                }
+                cout << joinLine << endl;
+                activeCols.erase(activeCols.begin() + col);
+            } else {
+                activeCols[col] = node.parent1;
+            }
+        } else {
+            activeCols.erase(activeCols.begin() + col);
+        }
+    }
+}
+
 // Function to test the custom HashTable implementation (Phase 3 + Dynamic Resizing)
 void runHashTableTests() {
     cout << "========================================" << endl;
@@ -1972,7 +2952,9 @@ void printUsage() {
     cout << "  minigit show <commitId>" << endl;
     cout << "  minigit diff <filename>" << endl;
     cout << "  minigit diff <commitA> <commitB>" << endl;
-    cout << "  minigit log [--oneline]" << endl;
+    cout << "  minigit merge <branch>" << endl;
+    cout << "  minigit merge --abort" << endl;
+    cout << "  minigit log [--oneline | --graph]" << endl;
     cout << "  minigit config user.name \"<name>\"" << endl;
     cout << "  minigit test-hashtable" << endl;
 }
@@ -2033,12 +3015,11 @@ int main(int argc, char* argv[]) {
         }
         removeFile(targetFile, cached);
     } else if (command == "commit") {
-        if (argc < 3) {
-            cout << "Usage:" << endl;
-            cout << "  minigit commit \"<message>\"" << endl;
-            return 1;
+        string msg = "";
+        if (argc >= 3) {
+            msg = argv[2];
         }
-        createCommit(argv[2]);
+        createCommit(msg);
     } else if (command == "show") {
         if (argc < 3) {
             cout << "Usage:" << endl;
@@ -2106,12 +3087,32 @@ int main(int argc, char* argv[]) {
         } else {
             checkoutTarget(target, force);
         }
-    } else if (command == "log") {
-        bool oneline = false;
-        if (argc >= 3 && string(argv[2]) == "--oneline") {
-            oneline = true;
+    } else if (command == "merge") {
+        if (argc < 3) {
+            cout << "Usage:" << endl;
+            cout << "  minigit merge <branch>" << endl;
+            cout << "  minigit merge --abort" << endl;
+            return 1;
         }
-        printCommitLog(oneline);
+        string target = argv[2];
+        if (target == "--abort") {
+            abortMerge();
+        } else {
+            mergeBranch(target);
+        }
+    } else if (command == "log") {
+        if (argc >= 3) {
+            string flag = argv[2];
+            if (flag == "--oneline") {
+                printCommitLog(true);
+            } else if (flag == "--graph") {
+                printCommitGraph();
+            } else {
+                printCommitLog(false);
+            }
+        } else {
+            printCommitLog(false);
+        }
     } else if (command == "config") {
         if (argc == 4 && string(argv[2]) == "user.name") {
             setUserConfig(".minigit", "user.name", argv[3]);

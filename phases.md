@@ -18,7 +18,7 @@ This reference document tracks the development phases of **MiniGit**, detailing 
 | **Phase 8** | Branches & Named Pointers | `minigit branch [-d]`, `minigit checkout [-b]` | Graph / DAG Branching, Named Pointers, Custom HashTable Reference Store | **Completed** |
 | **Phase 9** | Everyday Commands & Repository Status | `minigit status`, `rm`, `add .`, `show`, `config`, `log --oneline` | $O(1)$ Hash Table Set Operations, DFS Directory Traversal, Commit Metadata Serialization | **Completed** |
 | **Phase 10** | Line-by-Line Diff | `minigit diff` | Longest Common Subsequence (LCS) / Dynamic Programming | **Completed** |
-| **Phase 11** | Three-Way Merge | `minigit merge <branch>` | Lowest Common Ancestor (LCA) on DAG | *Next up* |
+| **Phase 11** | Three-Way Merge & DAG Log | `minigit merge <branch>`, `log --graph` | Lowest Common Ancestor (LCA), BFS DAG Traversal, Kahn's Topological Sort | **Completed** |
 
 ---
 
@@ -188,9 +188,27 @@ This reference document tracks the development phases of **MiniGit**, detailing 
 
 ---
 
-### Phase 11: Three-Way Merge (`minigit merge <branch>`)
-* **Status:** Planned
-* **Purpose:** Automatically merges changes from another branch into the current branch.
-* **DSA Concept:** **Lowest Common Ancestor (LCA)**
-  * Traverses backward through commit parents to find common ancestor node in the DAG.
-  * Applies three-way reconciliation algorithm (ancestor vs base vs incoming).
+### Phase 11: Three-Way Merge & DAG Log (`minigit merge <branch>`, `minigit log --graph`)
+* **Status:** Completed
+* **Purpose:** Enables non-linear branch integration with three-way reconciliation, fast-forward optimization, conflict marker insertion, merge aborting, and ASCII DAG log visualization.
+* **DSA Concept:** **Lowest Common Ancestor (LCA), Commit DAG Traversal & Kahn's Topological Sort**
+  * **Commit DAG (Directed Acyclic Graph):**
+    * History evolves from a linear chain into a general DAG once merge commits appear, as a merge node possesses two incoming edges (`parent` and `parent2`).
+  * **Lowest Common Ancestor / Merge Base (`findMergeBase`):**
+    * BFS from commit A (using `std::queue<string>`) collects all reachable ancestor commits into our custom `HashTable` (set) in $O(V + E)$ time.
+    * BFS from commit B returns the first commit encountered that exists in the ancestor set of A.
+    * Fast-forward optimization: if `mergeBase == currentCommit`, moves branch reference pointer directly without creating an extraneous merge node.
+    * Already up to date: if `mergeBase == targetCommit`, detects branch is already merged.
+  * **Three-Way File Reconciliation:**
+    * Compares Base ($B$), Ours ($O$), and Theirs ($T$) file snapshots.
+    * Executes line-level reconciliation using `diffLines()` against Base:
+      * Unmodified lines or changes on one side only are integrated automatically.
+      * Clashing edits across the same file regions produce inline conflict markers (`<<<<<<< ours` / `=======` / `>>>>>>> theirs`).
+      * Conflicted state is recorded in `.minigit/MERGE_HEAD` until resolved and committed.
+  * **Merge Abort (`minigit merge --abort`):**
+    * Restores working tree and staging area to the pre-merge `HEAD` commit snapshot and removes `MERGE_HEAD`.
+  * **DAG Graph Visualizer (`minigit log --graph`):**
+    * Computes node in-degree (child reference counts) across the commit graph.
+    * Applies Kahn's topological sort to guarantee child nodes appear before their parent nodes.
+    * Renders an ASCII multi-lane visualization showing branch divergence and convergence (`|\`, `|/`).
+* **Files Involved:** `main.cpp` (`findMergeBase()`, `getCommitParents()`, `mergeBranch()`, `abortMerge()`, `extractChunks()`, `mergeFileLines()`, `printCommitGraph()`).

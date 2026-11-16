@@ -3,7 +3,7 @@
 A lightweight command-line version-control project designed for 2nd-year Data Structures and Algorithms (DSA). MiniGit demonstrates core data structure concepts step-by-step.
 
 ## Current Project Status
-**Phase 9 — Line-by-Line Diff, Longest Common Subsequence (LCS) & Commit Comparison**
+**Phase 10 — Three-Way Merge, Lowest Common Ancestor (LCA), Merge Base & Commit Graph**
 
 ---
 
@@ -122,11 +122,12 @@ minigit checkout -b <name> [--force]
 ```bash
 minigit log
 minigit log --oneline
+minigit log --graph
 ```
 - Resolves starting commit node from active branch / `HEAD`.
-- Traverses backward along parent pointers (`HEAD -> parent -> parent -> NULL`).
-- Standard `log`: Displays full visual linked list nodes with commit ID, author, date, message, parent link, and tracked files.
+- Standard `log`: Displays full visual linked list nodes with commit ID, author, date, message, parent links (`Parent:` and optional `Parent2:`), and tracked files.
 - `--oneline`: Displays compact single-line format: `<commitId> <message>`.
+- `--graph`: Traverses the commit DAG using Kahn's topological sort and renders an ASCII visual graph displaying branch divergence, merges (`|\`, `|/`), and ref labels (`HEAD -> branch`, `branch`).
 
 ### 12. File & Commit Differences (Phase 9)
 ```bash
@@ -146,7 +147,33 @@ minigit diff <commitA> <commitB>
 - **Large File Protection:**
   - If $m \times n > 25\text{ million}$ DP table cells, prints a safety warning and falls back to reporting `"Files differ"`.
 
-### 13. Test Custom Hash Table
+### 13. Three-Way Branch Merge (Phase 10)
+```bash
+minigit merge <branch>
+minigit merge --abort
+```
+- **Lowest Common Ancestor (LCA / Merge Base):**
+  - Locates the merge base of the current branch commit and the target branch commit using BFS and custom `HashTable` ancestor tracking over the commit DAG.
+- **Fast-Forward:**
+  - If the merge base is the current commit, advances the branch pointer and restores files without creating a merge commit: `"Fast-forward"`.
+- **Already Up to Date:**
+  - If the merge base is the target commit, prints `"Already up to date."`.
+- **Three-Way File Reconciliation:**
+  - Compares file snapshots between Base, Ours, and Theirs:
+    - Same in ours and theirs $\to$ keep.
+    - Changed only in theirs $\to$ take theirs.
+    - Changed only in ours $\to$ keep ours.
+    - Added or deleted on one side only $\to$ applied automatically.
+    - Changed on both sides $\to$ line-level 3-way merge via `diffLines()`.
+- **Conflict Handling:**
+  - If conflicting line edits occur, writes conflict markers (`<<<<<<< ours` / `=======` / `>>>>>>> theirs`) to the working tree file.
+  - Reports `CONFLICT (content): Merge conflict in <filename>`.
+  - Leaves working tree with conflict markers, does not auto-commit, and records merge state in `.minigit/MERGE_HEAD`.
+  - The user resolves conflicts, runs `minigit add <filename>`, and commits with `minigit commit`.
+- **Merge Abort (`merge --abort`):**
+  - Restores working tree and staging area back to the HEAD snapshot and removes `.minigit/MERGE_HEAD`.
+
+### 14. Test Custom Hash Table
 ```bash
 minigit test-hashtable
 ```
@@ -155,22 +182,25 @@ minigit test-hashtable
   - Dynamic resizing from capacity 10 to 40 across 30 elements with $O(n)$ node relinking and zero node reallocations.
   - Insert, update, get, contains, and remove.
 
-### 14. Commit File Format (`.minigit/commits/<commitId>`)
+### 15. Commit File Format (`.minigit/commits/<commitId>`)
 Each commit snapshot is saved as a plain text file containing key-value metadata headers, followed by a blank line delimiter, and then tracked files with their polynomial hashes (`<filename>|<hash>`):
 
 ```text
-id=C001
-message=Initial commit
-parent=NULL
+id=C004
+message=Merge branch 'feature'
+parent=C003
+parent2=C002
 author=Alice <alice@minigit>
-timestamp=2026-11-16 19:00:00
+timestamp=2026-11-16 19:30:00
 
 main.cpp|182390192830192
 README.md|981273918237192
 ```
 
-**Backward Compatibility:**
-MiniGit seamlessly handles legacy commit files from earlier phases that lack `author=` or `timestamp=` headers. When parsed by `loadSnapshot()`, `showCommit()`, or `printCommitLog()`, missing metadata defaults gracefully to author `"Unknown <unknown@minigit>"` and timestamp `"Unknown"`.
+**Two-Parent DAG Support & Backward Compatibility:**
+- Standard commits specify `parent=<id>`.
+- Merge commits additionally record `parent2=<id>`.
+- MiniGit seamlessly handles legacy commit files from earlier phases lacking `author=`, `timestamp=`, or `parent2=` headers. When parsed by `loadSnapshot()`, `showCommit()`, or `printCommitLog()`, missing metadata defaults gracefully.
 
 ---
 
@@ -218,6 +248,15 @@ MiniGit seamlessly handles legacy commit files from earlier phases that lack `au
    - **Backtracking:** Traces from $(m, n)$ down to $(0, 0)$ to reconstruct the optimal sequence of `UNCHANGED`, `ADDED`, and `REMOVED` line operations.
    - **Context Windowing:** Preserves up to 2 lines of unchanged context surrounding edits, collapsing distant unchanged segments into hunks with `...`.
    - **Complexity:** $O(m \times n)$ time and space; guards against excessive memory use with a 25-million cell threshold check.
+
+10. **Lowest Common Ancestor (LCA) in a Directed Acyclic Graph (DAG):**
+    - History in MiniGit becomes a **Directed Acyclic Graph (DAG)** once merges occur, as merge commits possess two parent pointers (`parent` and `parent2`).
+    - `minigit merge` locates the merge base by running Breadth-First Search (BFS) using `std::queue` from commit A to populate an ancestor set into custom `HashTable`, followed by BFS from commit B to find the nearest common ancestor node.
+    - **Complexity:** $O(V + E)$ where $V$ is commits count and $E$ is parent pointer edges.
+
+11. **Kahn's Topological Sort & ASCII DAG Layout (`log --graph`):**
+    - Evaluates commit in-degree (child counts) to determine topological order: children precede parents.
+    - Resolves multi-branch commit lanes, merges (`|\`), and branches (`|/`) using an ASCII visual pipeline.
 
 ---
 
