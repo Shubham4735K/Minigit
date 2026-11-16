@@ -1463,6 +1463,406 @@ void printCommitLog(bool oneline) {
     }
 }
 
+// ============================================================================
+// Phase 9 / Task 4: Line-by-Line Diff & Longest Common Subsequence (LCS)
+// ============================================================================
+
+// Enum representing the type of difference operation
+enum class DiffType {
+    UNCHANGED,
+    ADDED,
+    REMOVED
+};
+
+// Represents an individual line diff operation in the edit script
+struct DiffOp {
+    DiffType type;
+    string text;
+
+    DiffOp(DiffType t, const string& txt) : type(t), text(txt) {}
+};
+
+// Splits a string into lines, normalizing both \r\n and \n line endings
+// Time Complexity: O(L) where L is content length
+vector<string> splitFileLines(const string& content) {
+    vector<string> lines;
+    if (content.empty()) return lines;
+
+    string line;
+    for (size_t i = 0; i < content.size(); ++i) {
+        char c = content[i];
+        if (c == '\r') {
+            if (i + 1 < content.size() && content[i + 1] == '\n') {
+                lines.push_back(line);
+                line.clear();
+                ++i;
+            } else {
+                lines.push_back(line);
+                line.clear();
+            }
+        } else if (c == '\n') {
+            lines.push_back(line);
+            line.clear();
+        } else {
+            line += c;
+        }
+    }
+    if (!line.empty()) {
+        lines.push_back(line);
+    }
+    return lines;
+}
+
+// Computes the Longest Common Subsequence (LCS) of two vectors of lines
+// using a bottom-up dynamic programming 2D table, then backtracks to build the edit script.
+// DSA Concept: Dynamic Programming (LCS) & Backtracking
+// Time Complexity:  O(m * n) where m = a.size(), n = b.size()
+// Space Complexity: O(m * n) for the 2D DP matrix
+// Reusable for three-way merge (Phase 10 / Task 5).
+vector<DiffOp> diffLines(const vector<string>& a, const vector<string>& b) {
+    size_t m = a.size();
+    size_t n = b.size();
+
+    // Guard against very large files (exceeding 25 million DP table cells)
+    if (static_cast<unsigned long long>(m) * n > 25000000ULL) {
+        cerr << "Warning: File too large for line-by-line diff (> 25M DP table cells)." << endl;
+        vector<DiffOp> fallback;
+        for (const auto& line : a) fallback.push_back(DiffOp(DiffType::REMOVED, line));
+        for (const auto& line : b) fallback.push_back(DiffOp(DiffType::ADDED, line));
+        return fallback;
+    }
+
+    // Base cases for empty vectors
+    if (m == 0 && n == 0) {
+        return {};
+    }
+    if (m == 0) {
+        vector<DiffOp> ops;
+        for (const auto& line : b) ops.push_back(DiffOp(DiffType::ADDED, line));
+        return ops;
+    }
+    if (n == 0) {
+        vector<DiffOp> ops;
+        for (const auto& line : a) ops.push_back(DiffOp(DiffType::REMOVED, line));
+        return ops;
+    }
+
+    // Allocate (m + 1) x (n + 1) DP table initialized to 0
+    // L[i][j] stores the length of LCS of prefix a[0..i-1] and b[0..j-1]
+    vector<vector<int>> L(m + 1, vector<int>(n + 1, 0));
+
+    // Bottom-up table filling
+    for (size_t i = 1; i <= m; ++i) {
+        for (size_t j = 1; j <= n; ++j) {
+            // DP recurrence: if a[i]==b[j] then L[i][j]=L[i-1][j-1]+1 else max(L[i-1][j], L[i][j-1])
+            if (a[i - 1] == b[j - 1]) {
+                L[i][j] = L[i - 1][j - 1] + 1;
+            } else {
+                L[i][j] = max(L[i - 1][j], L[i][j - 1]);
+            }
+        }
+    }
+
+    // Backtrack from (m, n) down to (0, 0) to produce the edit script
+    vector<DiffOp> ops;
+    size_t i = m;
+    size_t j = n;
+
+    while (i > 0 && j > 0) {
+        if (a[i - 1] == b[j - 1]) {
+            ops.push_back(DiffOp(DiffType::UNCHANGED, a[i - 1]));
+            --i;
+            --j;
+        } else if (L[i][j - 1] >= L[i - 1][j]) {
+            // Line added in b
+            ops.push_back(DiffOp(DiffType::ADDED, b[j - 1]));
+            --j;
+        } else {
+            // Line removed from a
+            ops.push_back(DiffOp(DiffType::REMOVED, a[i - 1]));
+            --i;
+        }
+    }
+
+    while (i > 0) {
+        ops.push_back(DiffOp(DiffType::REMOVED, a[i - 1]));
+        --i;
+    }
+
+    while (j > 0) {
+        ops.push_back(DiffOp(DiffType::ADDED, b[j - 1]));
+        --j;
+    }
+
+    // Reverse backwards-collected operations to obtain chronological forward sequence
+    reverse(ops.begin(), ops.end());
+    return ops;
+}
+
+// Prints a diff edit script with 2 lines of context around changes
+// Time Complexity: O(K) where K is number of operations
+void printDiffScript(const vector<DiffOp>& ops) {
+    if (ops.empty()) {
+        cout << "No differences" << endl;
+        return;
+    }
+
+    bool hasChanges = false;
+    for (const auto& op : ops) {
+        if (op.type != DiffType::UNCHANGED) {
+            hasChanges = true;
+            break;
+        }
+    }
+
+    if (!hasChanges) {
+        cout << "No differences" << endl;
+        return;
+    }
+
+    size_t count = ops.size();
+    vector<bool> show(count, false);
+
+    // Mark changes and up to 2 lines of context before and after
+    for (size_t i = 0; i < count; ++i) {
+        if (ops[i].type != DiffType::UNCHANGED) {
+            show[i] = true;
+            for (size_t d = 1; d <= 2; ++d) {
+                if (i >= d) show[i - d] = true;
+                if (i + d < count) show[i + d] = true;
+            }
+        }
+    }
+
+    bool skipped = false;
+    for (size_t i = 0; i < count; ++i) {
+        if (show[i]) {
+            if (skipped) {
+                cout << "..." << endl;
+                skipped = false;
+            }
+            if (ops[i].type == DiffType::ADDED) {
+                cout << "+ " << ops[i].text << endl;
+            } else if (ops[i].type == DiffType::REMOVED) {
+                cout << "- " << ops[i].text << endl;
+            } else {
+                cout << "  " << ops[i].text << endl;
+            }
+        } else {
+            skipped = true;
+        }
+    }
+    if (skipped) {
+        cout << "..." << endl;
+    }
+}
+
+// Compares the working tree file against its last committed version in objects/<hash>
+// Time Complexity: O(m * n) for diff computation
+void diffWorkingFile(const string& filename) {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    string currentCommit = resolveCurrentCommit(repoDir);
+    if (currentCommit.empty() || currentCommit == "NULL") {
+        cerr << "Error: No commits exist to diff against." << endl;
+        return;
+    }
+
+    HashTable headSnapshot = loadSnapshot(currentCommit);
+    bool inSnapshot = headSnapshot.contains(filename);
+    bool onDisk = fs::exists(filename, ec);
+
+    if (!inSnapshot && !onDisk) {
+        cerr << "Error: pathspec '" << filename << "' did not match any files." << endl;
+        return;
+    }
+
+    if (!inSnapshot && onDisk) {
+        // Newly added file not present in HEAD
+        cout << "new file: " << filename << endl;
+        cout << "--- /dev/null" << endl;
+        cout << "+++ b/" << filename << endl;
+        string workingContent;
+        if (readFileToString(filename, workingContent)) {
+            vector<string> lines = splitFileLines(workingContent);
+            for (const auto& line : lines) {
+                cout << "+ " << line << endl;
+            }
+        }
+        return;
+    }
+
+    if (inSnapshot && !onDisk) {
+        // Tracked file deleted from disk
+        cout << "deleted file: " << filename << endl;
+        cout << "--- a/" << filename << endl;
+        cout << "+++ /dev/null" << endl;
+        string committedHash = headSnapshot.get(filename);
+        string committedContent;
+        if (readFileToString(repoDir + "/objects/" + committedHash, committedContent)) {
+            vector<string> lines = splitFileLines(committedContent);
+            for (const auto& line : lines) {
+                cout << "- " << line << endl;
+            }
+        }
+        return;
+    }
+
+    // Both in snapshot and on disk: compare contents
+    string committedHash = headSnapshot.get(filename);
+    string committedContent;
+    if (!readFileToString(repoDir + "/objects/" + committedHash, committedContent)) {
+        cerr << "Error: Unable to read committed object for '" << filename << "'." << endl;
+        return;
+    }
+
+    string workingContent;
+    if (!readFileToString(filename, workingContent)) {
+        cerr << "Error: Unable to read working file '" << filename << "'." << endl;
+        return;
+    }
+
+    vector<string> linesA = splitFileLines(committedContent);
+    vector<string> linesB = splitFileLines(workingContent);
+
+    if (linesA == linesB) {
+        cout << "No differences" << endl;
+        return;
+    }
+
+    if (static_cast<unsigned long long>(linesA.size()) * linesB.size() > 25000000ULL) {
+        cout << "diff --minigit a/" << filename << " b/" << filename << endl;
+        cout << "Warning: File '" << filename << "' is too large for line-by-line diff (> 25M DP table cells)." << endl;
+        cout << "Files differ." << endl;
+        return;
+    }
+
+    cout << "diff --minigit a/" << filename << " b/" << filename << endl;
+    cout << "--- a/" << filename << endl;
+    cout << "+++ b/" << filename << endl;
+    vector<DiffOp> ops = diffLines(linesA, linesB);
+    printDiffScript(ops);
+}
+
+// Compares all differing files between two commit snapshots
+// Time Complexity: O(F * m * n) where F is differing files count
+void diffCommits(const string& commitA, const string& commitB) {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    string pathA = repoDir + "/commits/" + commitA;
+    if (!fs::exists(pathA, ec)) {
+        cerr << "Error: Commit '" << commitA << "' does not exist." << endl;
+        return;
+    }
+
+    string pathB = repoDir + "/commits/" + commitB;
+    if (!fs::exists(pathB, ec)) {
+        cerr << "Error: Commit '" << commitB << "' does not exist." << endl;
+        return;
+    }
+
+    HashTable snapshotA = loadSnapshot(commitA);
+    HashTable snapshotB = loadSnapshot(commitB);
+
+    auto entriesA = snapshotA.getAll();
+    auto entriesB = snapshotB.getAll();
+
+    vector<string> allFiles;
+    for (const auto& p : entriesA) {
+        allFiles.push_back(p.first);
+    }
+    for (const auto& p : entriesB) {
+        if (!snapshotA.contains(p.first)) {
+            allFiles.push_back(p.first);
+        }
+    }
+    sort(allFiles.begin(), allFiles.end());
+
+    bool anyDiff = false;
+
+    for (const auto& file : allFiles) {
+        bool inA = snapshotA.contains(file);
+        bool inB = snapshotB.contains(file);
+
+        if (inA && inB) {
+            string hashA = snapshotA.get(file);
+            string hashB = snapshotB.get(file);
+
+            if (hashA == hashB) continue;
+
+            string contentA, contentB;
+            readFileToString(repoDir + "/objects/" + hashA, contentA);
+            readFileToString(repoDir + "/objects/" + hashB, contentB);
+
+            vector<string> linesA = splitFileLines(contentA);
+            vector<string> linesB = splitFileLines(contentB);
+
+            if (linesA == linesB) continue;
+
+            anyDiff = true;
+            cout << "diff --minigit a/" << file << " b/" << file << endl;
+
+            if (static_cast<unsigned long long>(linesA.size()) * linesB.size() > 25000000ULL) {
+                cout << "Warning: File '" << file << "' is too large for line-by-line diff (> 25M DP table cells)." << endl;
+                cout << "Files differ." << endl;
+            } else {
+                cout << "--- a/" << file << endl;
+                cout << "+++ b/" << file << endl;
+                vector<DiffOp> ops = diffLines(linesA, linesB);
+                printDiffScript(ops);
+            }
+        } else if (inA && !inB) {
+            anyDiff = true;
+            string hashA = snapshotA.get(file);
+            string contentA;
+            readFileToString(repoDir + "/objects/" + hashA, contentA);
+            vector<string> linesA = splitFileLines(contentA);
+
+            cout << "deleted file: " << file << endl;
+            cout << "--- a/" << file << endl;
+            cout << "+++ /dev/null" << endl;
+            for (const auto& line : linesA) {
+                cout << "- " << line << endl;
+            }
+        } else if (!inA && inB) {
+            anyDiff = true;
+            string hashB = snapshotB.get(file);
+            string contentB;
+            readFileToString(repoDir + "/objects/" + hashB, contentB);
+            vector<string> linesB = splitFileLines(contentB);
+
+            cout << "new file: " << file << endl;
+            cout << "--- /dev/null" << endl;
+            cout << "+++ b/" << file << endl;
+            for (const auto& line : linesB) {
+                cout << "+ " << line << endl;
+            }
+        }
+    }
+
+    if (!anyDiff) {
+        cout << "No differences" << endl;
+    }
+}
+
 // Function to test the custom HashTable implementation (Phase 3 + Dynamic Resizing)
 void runHashTableTests() {
     cout << "========================================" << endl;
@@ -1570,6 +1970,8 @@ void printUsage() {
     cout << "  minigit checkout <branch|commitId> [--force]" << endl;
     cout << "  minigit checkout -b <name> [--force]" << endl;
     cout << "  minigit show <commitId>" << endl;
+    cout << "  minigit diff <filename>" << endl;
+    cout << "  minigit diff <commitA> <commitB>" << endl;
     cout << "  minigit log [--oneline]" << endl;
     cout << "  minigit config user.name \"<name>\"" << endl;
     cout << "  minigit test-hashtable" << endl;
@@ -1644,6 +2046,17 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         showCommit(argv[2]);
+    } else if (command == "diff") {
+        if (argc == 3) {
+            diffWorkingFile(argv[2]);
+        } else if (argc == 4) {
+            diffCommits(argv[2], argv[3]);
+        } else {
+            cout << "Usage:" << endl;
+            cout << "  minigit diff <filename>" << endl;
+            cout << "  minigit diff <commitA> <commitB>" << endl;
+            return 1;
+        }
     } else if (command == "branch") {
         if (argc == 2) {
             listBranches();

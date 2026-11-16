@@ -3,7 +3,7 @@
 A lightweight command-line version-control project designed for 2nd-year Data Structures and Algorithms (DSA). MiniGit demonstrates core data structure concepts step-by-step.
 
 ## Current Project Status
-**Phase 8 & Everyday Commands — Branches, Status, Recursive Add, Show, Rm & Metadata**
+**Phase 9 — Line-by-Line Diff, Longest Common Subsequence (LCS) & Commit Comparison**
 
 ---
 
@@ -128,7 +128,25 @@ minigit log --oneline
 - Standard `log`: Displays full visual linked list nodes with commit ID, author, date, message, parent link, and tracked files.
 - `--oneline`: Displays compact single-line format: `<commitId> <message>`.
 
-### 12. Test Custom Hash Table
+### 12. File & Commit Differences (Phase 9)
+```bash
+minigit diff <filename>
+minigit diff <commitA> <commitB>
+```
+- **Working Tree Diff (`diff <filename>`):**
+  - Compares working file on disk against its last committed version in `.minigit/objects/<hash>`.
+  - If identical, prints `"No differences"`.
+  - If new (not in commit), reports `new file: <filename>` and all added lines (`+ `).
+  - If deleted from disk, reports `deleted file: <filename>` and all removed lines (`- `).
+  - If modified, prints unified-style diff with 2 lines of context around changes (`- ` removed, `+ ` added, `  ` unchanged).
+- **Snapshot Diff (`diff <commitA> <commitB>`):**
+  - Compares all files between two commit snapshots.
+  - Automatically identifies added files (`new file:`), deleted files (`deleted file:`), and modified files.
+  - If both snapshots are identical, prints `"No differences"`.
+- **Large File Protection:**
+  - If $m \times n > 25\text{ million}$ DP table cells, prints a safety warning and falls back to reporting `"Files differ"`.
+
+### 13. Test Custom Hash Table
 ```bash
 minigit test-hashtable
 ```
@@ -137,7 +155,7 @@ minigit test-hashtable
   - Dynamic resizing from capacity 10 to 40 across 30 elements with $O(n)$ node relinking and zero node reallocations.
   - Insert, update, get, contains, and remove.
 
-### 13. Commit File Format (`.minigit/commits/<commitId>`)
+### 14. Commit File Format (`.minigit/commits/<commitId>`)
 Each commit snapshot is saved as a plain text file containing key-value metadata headers, followed by a blank line delimiter, and then tracked files with their polynomial hashes (`<filename>|<hash>`):
 
 ```text
@@ -192,6 +210,14 @@ MiniGit seamlessly handles legacy commit files from earlier phases that lack `au
 8. **Content-Addressable Storage (CAS / Blobs):**
    - Files are indexed and deduplicated by their content hash (`.minigit/objects/<hash>`).
    - Collision-safe byte comparison prevents corruption.
+
+9. **Longest Common Subsequence (LCS) & Minimal Edit Script via 2D Dynamic Programming:**
+   - `minigit diff` uses bottom-up Dynamic Programming to find the longest sequence of identical lines between two file versions.
+   - **DP Recurrence:**
+     $$\text{if } a[i-1] == b[j-1] \implies L[i][j] = L[i-1][j-1] + 1 \quad \text{else} \quad L[i][j] = \max(L[i-1][j], L[i][j-1])$$
+   - **Backtracking:** Traces from $(m, n)$ down to $(0, 0)$ to reconstruct the optimal sequence of `UNCHANGED`, `ADDED`, and `REMOVED` line operations.
+   - **Context Windowing:** Preserves up to 2 lines of unchanged context surrounding edits, collapsing distant unchanged segments into hunks with `...`.
+   - **Complexity:** $O(m \times n)$ time and space; guards against excessive memory use with a 25-million cell threshold check.
 
 ---
 

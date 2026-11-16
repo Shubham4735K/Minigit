@@ -17,8 +17,8 @@ This reference document tracks the development phases of **MiniGit**, detailing 
 | **Phase 7** | Rollback & Object Storage | `minigit checkout <id> [--force]` | State Restoration, Uncommitted Changes Guard, Tracked File Pruning | **Completed** |
 | **Phase 8** | Branches & Named Pointers | `minigit branch [-d]`, `minigit checkout [-b]` | Graph / DAG Branching, Named Pointers, Custom HashTable Reference Store | **Completed** |
 | **Phase 9** | Everyday Commands & Repository Status | `minigit status`, `rm`, `add .`, `show`, `config`, `log --oneline` | $O(1)$ Hash Table Set Operations, DFS Directory Traversal, Commit Metadata Serialization | **Completed** |
-| **Phase 10** | Line-by-Line Diff | `minigit diff` | Longest Common Subsequence (LCS) / Dynamic Programming | *Next up* |
-| **Phase 11** | Three-Way Merge | `minigit merge <branch>` | Lowest Common Ancestor (LCA) on DAG | *Planned* |
+| **Phase 10** | Line-by-Line Diff | `minigit diff` | Longest Common Subsequence (LCS) / Dynamic Programming | **Completed** |
+| **Phase 11** | Three-Way Merge | `minigit merge <branch>` | Lowest Common Ancestor (LCA) on DAG | *Next up* |
 
 ---
 
@@ -162,10 +162,29 @@ This reference document tracks the development phases of **MiniGit**, detailing 
 ---
 
 ### Phase 10: File Difference (`minigit diff`)
-* **Status:** Planned
-* **Purpose:** Compares the working file against the staged or last committed version.
-* **DSA Concept:** **Longest Common Subsequence (LCS) / Dynamic Programming**
-  * $O(m \times n)$ 2D matrix dynamic programming to compute minimal edit script (insertions/deletions).
+* **Status:** Completed
+* **Purpose:** Computes and displays minimal line-by-line differences between working files and committed objects, or across two distinct historical commit snapshots.
+* **DSA Concept:** **Longest Common Subsequence (LCS) & Backtracking via 2D Dynamic Programming Table**
+  * **Tabular DP Algorithm:**
+    * Compares lines of sequence $a$ (size $m$) and sequence $b$ (size $n$) using an $(m + 1) \times (n + 1)$ 2D matrix $L$.
+    * **DP Recurrence:**
+      $$\text{if } a[i-1] == b[j-1] \implies L[i][j] = L[i-1][j-1] + 1 \quad \text{else} \quad L[i][j] = \max(L[i-1][j], L[i][j-1])$$
+    * **Backtracking:** Starting from $(m, n)$ down to $(0, 0)$:
+      * If $a[i-1] == b[j-1]$, record `UNCHANGED` and move diagonally $(i-1, j-1)$.
+      * If $L[i][j-1] \ge L[i-1][j]$, record `ADDED` from $b$ and move left $(i, j-1)$.
+      * Else, record `REMOVED` from $a$ and move up $(i-1, j)$.
+      * Reversing the backtracked sequence produces the minimal edit script from line $0$ to end.
+  * **Context Windowing (2 Lines):**
+    * Iterates through the edit script and marks any unchanged line within distance $\le 2$ of an edit operation.
+    * Gaps between separated change regions are collapsed with `...`.
+  * **Snapshot Comparison (`minigit diff <commitA> <commitB>`):**
+    * Loads both snapshots into custom `HashTable` instances.
+    * Classifies files into added (`new file:`), deleted (`deleted file:`), and modified (line diff) in $O(F \cdot m \cdot n)$ time.
+  * **Memory Safeguards & Edge Cases:**
+    * Identical files/snapshots output `"No differences"`.
+    * If $m \times n > 25\text{ million}$ table cells, warns and safely falls back to reporting `"Files differ"`.
+    * Core function `vector<DiffOp> diffLines(const vector<string>& a, const vector<string>& b)` is fully reusable for Phase 11 three-way merge.
+* **Files Involved:** `main.cpp` (`diffLines()`, `splitFileLines()`, `printDiffScript()`, `diffWorkingFile()`, `diffCommits()`).
 
 ---
 
