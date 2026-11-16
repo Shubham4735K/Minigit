@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <ctime>
 #include <system_error>
 #include "Hash.h"
 #include "HashTable.h"
@@ -143,6 +144,7 @@ HashTable loadStagingTable() {
 }
 
 // Loads a commit snapshot's file mapping (filename -> hash) into a HashTable.
+// Ignores all header metadata lines (id=, parent=, message=, author=, timestamp=).
 // Time Complexity: O(L) where L is the commit snapshot file size
 HashTable loadSnapshot(const string& commitId) {
     HashTable table;
@@ -161,8 +163,10 @@ HashTable loadSnapshot(const string& commitId) {
         trimCarriageReturn(line);
         if (line.empty()) continue;
 
-        // Skip commit metadata headers
-        if (line.rfind("id=", 0) == 0 || line.rfind("parent=", 0) == 0 || line.rfind("message=", 0) == 0) {
+        // Skip metadata header lines
+        if (line.rfind("id=", 0) == 0 || line.rfind("parent=", 0) == 0 ||
+            line.rfind("message=", 0) == 0 || line.rfind("author=", 0) == 0 ||
+            line.rfind("timestamp=", 0) == 0) {
             continue;
         }
 
@@ -193,17 +197,7 @@ bool saveTableToFile(const string& filePath, const HashTable& table) {
 // Phase 8: Branching & Reference Management
 // ============================================================================
 
-// DSA Concept: Named Pointers in a Directed Acyclic Graph (DAG)
-// In Git and MiniGit, branches are NOT full copies of the files; they are lightweight,
-// mutable named pointers (references) stored in .minigit/refs/heads/<branchName>.
-// Each file contains solely a commit ID (e.g. "C002").
-// HEAD points either to a symbolic reference (e.g. "ref: refs/heads/main") or directly
-// to a commit ID ("detached HEAD").
-// We use our custom HashTable (branchName -> commitId) for O(1) branch lookups.
-
-// Automatically migrates repositories created before Phase 8 (Task 2)
-// If HEAD = "main" or a raw commit ID, upgrades to ref: refs/heads/main and creates refs/heads/main.
-// Time Complexity: O(1)
+// Automatically migrates repositories created before Phase 8
 void migrateOldRepository(const string& repoDir) {
     error_code ec;
     const string refsHeadsDir = repoDir + "/refs/heads";
@@ -225,7 +219,6 @@ void migrateOldRepository(const string& repoDir) {
             headOut.close();
         }
     } else if (headContent.rfind("ref: ", 0) != 0 && !headContent.empty()) {
-        // Raw commit ID from pre-branching version: create refs/heads/main if missing
         const string mainBranchFile = refsHeadsDir + "/main";
         if (!fs::exists(mainBranchFile, ec)) {
             ofstream mainOut(mainBranchFile);
@@ -243,9 +236,7 @@ void migrateOldRepository(const string& repoDir) {
 }
 
 // Loads all branch references from .minigit/refs/heads/ into our custom HashTable (branchName -> commitId)
-// DSA Concept: Custom HashTable for branch dictionary mapping
-// Time Complexity: O(B * L) to read B branch reference files of length L.
-// Lookup Complexity: Average O(1) in custom HashTable.
+// Time Complexity: O(B * L) where B is count of branch files
 HashTable loadBranchTable(const string& repoDir) {
     HashTable branchTable;
     const string refsDir = repoDir + "/refs/heads";
@@ -265,9 +256,7 @@ HashTable loadBranchTable(const string& repoDir) {
     return branchTable;
 }
 
-// Determines the active branch name if HEAD is a symbolic reference.
-// Returns "" if HEAD is in detached state.
-// Time Complexity: O(1)
+// Determines the active branch name if HEAD is a symbolic reference
 string getCurrentBranchName(const string& repoDir) {
     const string headFile = repoDir + "/HEAD";
     string headContent;
@@ -281,9 +270,7 @@ string getCurrentBranchName(const string& repoDir) {
     return ""; // Detached HEAD
 }
 
-// Resolves HEAD to the current commit ID.
-// Flow: HEAD -> branch reference file -> commit ID (or raw commit ID if detached).
-// Time Complexity: O(1)
+// Resolves HEAD to current commit ID
 string resolveCurrentCommit(const string& repoDir) {
     const string headFile = repoDir + "/HEAD";
     string headContent;
@@ -306,18 +293,90 @@ string resolveCurrentCommit(const string& repoDir) {
 }
 
 // ============================================================================
-// Persistent Counter for Commit IDs (Task 1 Item A)
+// Configuration & Author / Timestamp Management (Task 3 Items 4 & 5)
 // ============================================================================
 
-// Retrieves the next commit sequence number using persistent counter file.
-// If counter file is missing, scans .minigit/commits/ directory for highest commit ID.
-// Time Complexity: O(1) when counter exists, O(C) directory scan on legacy repos (C = number of commits).
+// Reads a config setting from .minigit/config
+string getUserConfig(const string& repoDir, const string& key, const string& defaultValue) {
+    const string configFile = repoDir + "/config";
+    ifstream in(configFile);
+    if (!in.is_open()) return defaultValue;
+
+    string line;
+    while (getline(in, line)) {
+        trimCarriageReturn(line);
+        if (line.empty() || line[0] == '#') continue;
+        size_t eqPos = line.find('=');
+        if (eqPos != string::npos) {
+            string k = line.substr(0, eqPos);
+            string v = line.substr(eqPos + 1);
+            trimCarriageReturn(k);
+            if (k == key) {
+                return v;
+            }
+        }
+    }
+    return defaultValue;
+}
+
+// Writes or updates a configuration setting in .minigit/config
+void setUserConfig(const string& repoDir, const string& key, const string& value) {
+    const string configFile = repoDir + "/config";
+    vector<string> lines;
+    bool updated = false;
+
+    ifstream in(configFile);
+    if (in.is_open()) {
+        string line;
+        while (getline(in, line)) {
+            trimCarriageReturn(line);
+            size_t eqPos = line.find('=');
+            if (eqPos != string::npos) {
+                string k = line.substr(0, eqPos);
+                trimCarriageReturn(k);
+                if (k == key) {
+                    lines.push_back(key + "=" + value);
+                    updated = true;
+                    continue;
+                }
+            }
+            if (!line.empty()) {
+                lines.push_back(line);
+            }
+        }
+        in.close();
+    }
+
+    if (!updated) {
+        lines.push_back(key + "=" + value);
+    }
+
+    ofstream out(configFile);
+    if (out.is_open()) {
+        for (const auto& l : lines) {
+            out << l << "\n";
+        }
+        out.close();
+    }
+}
+
+// Returns formatted current local timestamp string (YYYY-MM-DD HH:MM:SS)
+string getCurrentTimestamp() {
+    time_t now = time(nullptr);
+    char buf[64];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    return string(buf);
+}
+
+// ============================================================================
+// Persistent Counter for Commit IDs
+// ============================================================================
+
 int getNextCommitNumber(const string& repoDir) {
     const string counterPath = repoDir + "/counter";
     const string commitsDir = repoDir + "/commits";
     int lastUsed = -1;
 
-    // 1. Try reading existing counter file
     ifstream in(counterPath);
     if (in.is_open()) {
         string line;
@@ -332,7 +391,6 @@ int getNextCommitNumber(const string& repoDir) {
         in.close();
     }
 
-    // 2. If counter is missing or invalid, rebuild by scanning .minigit/commits/
     if (lastUsed < 0) {
         lastUsed = 0;
         error_code ec;
@@ -353,7 +411,6 @@ int getNextCommitNumber(const string& repoDir) {
 
     int nextNum = lastUsed + 1;
 
-    // 3. Persist the updated counter value back to .minigit/counter
     ofstream out(counterPath);
     if (out.is_open()) {
         out << nextNum << "\n";
@@ -364,10 +421,84 @@ int getNextCommitNumber(const string& repoDir) {
 }
 
 // ============================================================================
+// Ignore Rules & Recursive Collector (Task 3 Item 3)
+// ============================================================================
+
+// Checks whether a path matches ignore patterns (or built-in rules for .minigit, .git, *.exe)
+bool isIgnored(const string& pathStr, const vector<string>& ignorePatterns) {
+    // 1. Built-in exclusions: repository metadata directories
+    if (pathStr == ".minigit" || pathStr.rfind(".minigit/", 0) == 0) return true;
+    if (pathStr == ".git" || pathStr.rfind(".git/", 0) == 0) return true;
+
+    // Built-in rule: skip *.exe binaries
+    if (pathStr.size() >= 4) {
+        string ext = pathStr.substr(pathStr.size() - 4);
+        if (ext == ".exe" || ext == ".EXE") return true;
+    }
+
+    size_t lastSlash = pathStr.find_last_of("/\\");
+    string filename = (lastSlash == string::npos) ? pathStr : pathStr.substr(lastSlash + 1);
+
+    // 2. User patterns from .minigitignore
+    for (const auto& pattern : ignorePatterns) {
+        if (pattern.empty()) continue;
+
+        // Wildcard extension: *.ext
+        if (pattern.rfind("*.", 0) == 0) {
+            string ext = pattern.substr(1);
+            if (pathStr.size() >= ext.size() &&
+                pathStr.substr(pathStr.size() - ext.size()) == ext) {
+                return true;
+            }
+        }
+        // Directory rule: dir/
+        else if (pattern.back() == '/') {
+            string dirName = pattern.substr(0, pattern.size() - 1);
+            if (filename == dirName || pathStr.find(pattern) != string::npos) {
+                return true;
+            }
+        }
+        // Exact filename or path match
+        else {
+            if (filename == pattern || pathStr == pattern) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Recursively collects regular files starting from currentDir, filtering out ignored entries
+void collectFilesRecursive(const string& currentDir, vector<string>& collected, const vector<string>& ignorePatterns) {
+    error_code ec;
+    auto entries = fs::directory_iterator(currentDir, ec);
+
+    for (const auto& entry : entries) {
+        string entryPath = entry.path().string();
+        for (char& c : entryPath) {
+            if (c == '\\') c = '/';
+        }
+        if (entryPath.rfind("./", 0) == 0) {
+            entryPath = entryPath.substr(2);
+        }
+
+        if (isIgnored(entryPath, ignorePatterns)) {
+            continue;
+        }
+
+        if (fs::is_directory(entryPath, ec)) {
+            collectFilesRecursive(entryPath, collected, ignorePatterns);
+        } else {
+            collected.push_back(entryPath);
+        }
+    }
+}
+
+// ============================================================================
 // Core MiniGit Commands
 // ============================================================================
 
-// Function to initialize a new MiniGit repository (Phase 1 + Phase 8 Branch Ref setup)
+// Function to initialize a new MiniGit repository
 void initRepository() {
     const string repoDir = ".minigit";
     const string headFile = repoDir + "/HEAD";
@@ -377,25 +508,19 @@ void initRepository() {
 
     error_code ec;
 
-    // 1. Check if .minigit repository directory already exists
     if (fs::exists(repoDir, ec)) {
         cout << "MiniGit repository already exists." << endl;
         return;
     }
 
-    // 2. Create the hidden .minigit directory and objects storage
     if (!fs::create_directory(repoDir, ec)) {
         cerr << "Error: Unable to create repository directory '" << repoDir << "'." << endl;
         return;
     }
 
-    // Create objects directory for Content-Addressable Storage (Blobs)
     fs::create_directory(objectsDir, ec);
-
-    // Create refs/heads/ directory for branch pointers (Phase 8)
     fs::create_directories(refsHeadsDir, ec);
 
-    // 3. Create HEAD file pointing symbolically to default branch 'main'
     ofstream head(headFile);
     if (!head.is_open()) {
         cerr << "Error: Unable to create HEAD file at '" << headFile << "'." << endl;
@@ -404,7 +529,6 @@ void initRepository() {
     head << "ref: refs/heads/main\n";
     head.close();
 
-    // 4. Initialize persistent commit counter with 0
     ofstream counterOut(counterFile);
     if (counterOut.is_open()) {
         counterOut << "0\n";
@@ -414,46 +538,38 @@ void initRepository() {
     cout << "Initialized empty MiniGit repository in " << repoDir << "/" << endl;
 }
 
-// Function to compute and display the hash of a file (Phase 2)
+// Function to compute and display the hash of a file
 void hashFile(const string& filename) {
     error_code ec;
 
-    // 1. Check if the file exists
     if (!fs::exists(filename, ec)) {
         cerr << "Error: File not found." << endl;
         return;
     }
 
-    // 2. Check if the path is a directory instead of a regular file
     if (fs::is_directory(filename, ec)) {
         cerr << "Error: '" << filename << "' is a directory, not a file." << endl;
         return;
     }
 
-    // 3. Read file contents
     string content;
     if (!readFileToString(filename, content)) {
         cerr << "Error: Unable to open file '" << filename << "'." << endl;
         return;
     }
 
-    // 4. Calculate polynomial rolling hash
     string hashValue = calculateHash(content);
-
-    // 5. Display the file name and its computed hash
     cout << "File: " << filename << endl;
     cout << "Hash: " << hashValue << endl;
 }
 
-// Function to stage a file in MiniGit (Phase 4 + Task 1 Item C collision safety)
+// Function to stage a single file
 void addFile(const string& filename) {
     const string repoDir = ".minigit";
     const string stagingFile = repoDir + "/staging";
     const string objectsDir = repoDir + "/objects";
 
     error_code ec;
-
-    // 1. Check if .minigit repository directory exists
     if (!fs::exists(repoDir, ec)) {
         cerr << "Error: Not a MiniGit repository." << endl;
         cerr << "Run 'minigit init' first." << endl;
@@ -462,35 +578,29 @@ void addFile(const string& filename) {
 
     migrateOldRepository(repoDir);
 
-    // 2. Check if target file exists
     if (!fs::exists(filename, ec)) {
         cerr << "Error: File not found." << endl;
         return;
     }
 
-    // 3. Ensure target path is a regular file, not a directory
     if (fs::is_directory(filename, ec)) {
         cerr << "Error: '" << filename << "' is a directory, not a file." << endl;
         return;
     }
 
-    // 4. Read file content in binary mode
     string content;
     if (!readFileToString(filename, content)) {
         cerr << "Error: Unable to open file '" << filename << "'." << endl;
         return;
     }
 
-    // 5. Calculate polynomial hash
     string hashValue = calculateHash(content);
 
-    // 6. Collision-safe Content-Addressable Storage (Task 1 Item C)
     if (!fs::exists(objectsDir, ec)) {
         fs::create_directories(objectsDir, ec);
     }
     string blobPath = objectsDir + "/" + hashValue;
     if (fs::exists(blobPath, ec)) {
-        // Blob exists: verify that byte contents are identical
         string existingContent;
         if (readFileToString(blobPath, existingContent)) {
             if (existingContent != content) {
@@ -500,7 +610,6 @@ void addFile(const string& filename) {
             }
         }
     } else {
-        // Save new blob
         ofstream blobOut(blobPath, ios::binary);
         if (blobOut.is_open()) {
             blobOut << content;
@@ -510,33 +619,25 @@ void addFile(const string& filename) {
         }
     }
 
-    // 7. In-memory HashTable to hold staging entries
     HashTable stagingTable = loadStagingTable();
-
-    // 8. Insert or update staged file in HashTable
     stagingTable.insert(filename, hashValue);
 
-    // 9. Persist updated HashTable back to .minigit/staging
     if (!saveTableToFile(stagingFile, stagingTable)) {
         cerr << "Error: Unable to write to staging file at '" << stagingFile << "'." << endl;
         return;
     }
 
-    // 10. Display confirmation message
     cout << "Staged: " << filename << endl;
     cout << "Hash: " << hashValue << endl;
 }
 
-// Function to create a new permanent commit snapshot (Phase 5 + Phase 8 Branch Pointer Advancing)
-void createCommit(const string& rawMessage) {
+// Function to stage all files recursively: minigit add . (Task 3 Item 3)
+void addAll() {
     const string repoDir = ".minigit";
-    const string headFile = repoDir + "/HEAD";
     const string stagingFile = repoDir + "/staging";
-    const string commitsDir = repoDir + "/commits";
+    const string objectsDir = repoDir + "/objects";
 
     error_code ec;
-
-    // 1. Verify that .minigit directory exists
     if (!fs::exists(repoDir, ec)) {
         cerr << "Error: Not a MiniGit repository." << endl;
         cerr << "Run 'minigit init' first." << endl;
@@ -545,7 +646,231 @@ void createCommit(const string& rawMessage) {
 
     migrateOldRepository(repoDir);
 
-    // 2. Validate commit message
+    // Read .minigitignore patterns
+    vector<string> ignorePatterns;
+    ifstream ignoreIn(".minigitignore");
+    if (ignoreIn.is_open()) {
+        string line;
+        while (getline(ignoreIn, line)) {
+            trimCarriageReturn(line);
+            if (line.empty() || line[0] == '#') continue;
+            ignorePatterns.push_back(line);
+        }
+        ignoreIn.close();
+    }
+
+    vector<string> filesToStage;
+    collectFilesRecursive(".", filesToStage, ignorePatterns);
+    sort(filesToStage.begin(), filesToStage.end());
+
+    if (filesToStage.empty()) {
+        cout << "No files to stage." << endl;
+        return;
+    }
+
+    if (!fs::exists(objectsDir, ec)) {
+        fs::create_directories(objectsDir, ec);
+    }
+
+    HashTable stagingTable = loadStagingTable();
+
+    for (const auto& filename : filesToStage) {
+        string content;
+        if (!readFileToString(filename, content)) {
+            cerr << "Warning: Unable to read file '" << filename << "'. Skipping." << endl;
+            continue;
+        }
+
+        string hashValue = calculateHash(content);
+        string blobPath = objectsDir + "/" + hashValue;
+
+        if (fs::exists(blobPath, ec)) {
+            string existingContent;
+            if (readFileToString(blobPath, existingContent)) {
+                if (existingContent != content) {
+                    cerr << "Error: Hash collision detected for object '" << hashValue
+                         << "'! File content differs. Aborting." << endl;
+                    return;
+                }
+            }
+        } else {
+            ofstream blobOut(blobPath, ios::binary);
+            if (blobOut.is_open()) {
+                blobOut << content;
+                blobOut.close();
+            }
+        }
+
+        stagingTable.insert(filename, hashValue);
+        cout << "Staged: " << filename << endl;
+        cout << "Hash: " << hashValue << endl;
+    }
+
+    saveTableToFile(stagingFile, stagingTable);
+}
+
+// Function to remove a file from staging (and disk unless --cached is specified) (Task 3 Item 2)
+void removeFile(const string& filename, bool cached) {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    HashTable stagingTable = loadStagingTable();
+    string currentCommit = resolveCurrentCommit(repoDir);
+    HashTable headSnapshot = loadSnapshot(currentCommit);
+
+    if (!stagingTable.contains(filename) && !headSnapshot.contains(filename)) {
+        cerr << "Error: pathspec '" << filename << "' did not match any files." << endl;
+        return;
+    }
+
+    if (stagingTable.contains(filename)) {
+        stagingTable.remove(filename);
+        saveTableToFile(repoDir + "/staging", stagingTable);
+    }
+
+    if (!cached) {
+        if (fs::exists(filename, ec)) {
+            if (!fs::remove(filename, ec)) {
+                cerr << "Error: Unable to remove file '" << filename << "' from disk." << endl;
+                return;
+            }
+        }
+        cout << "rm '" << filename << "'" << endl;
+    } else {
+        cout << "rm --cached '" << filename << "'" << endl;
+    }
+}
+
+// Function to display working tree and staging status (Task 3 Item 1)
+// DSA Concept: Custom HashTable for O(1) average lookup and comparison
+void printStatus() {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    string currentBranch = getCurrentBranchName(repoDir);
+    string currentCommit = resolveCurrentCommit(repoDir);
+
+    if (!currentBranch.empty()) {
+        cout << "On branch " << currentBranch << endl;
+    } else if (!currentCommit.empty()) {
+        cout << "HEAD detached at " << currentCommit << endl;
+    } else {
+        cout << "On branch main (no commits yet)" << endl;
+    }
+
+    HashTable headSnapshot = loadSnapshot(currentCommit);
+    HashTable stagingTable = loadStagingTable();
+
+    // 1. Staged changes (Staging vs HEAD snapshot)
+    vector<string> stagedNew;
+    vector<string> stagedModified;
+
+    for (const auto& entry : stagingTable.getAll()) {
+        const string& fName = entry.first;
+        const string& fHash = entry.second;
+
+        if (!headSnapshot.contains(fName)) {
+            stagedNew.push_back(fName);
+        } else if (headSnapshot.get(fName) != fHash) {
+            stagedModified.push_back(fName);
+        }
+    }
+    sort(stagedNew.begin(), stagedNew.end());
+    sort(stagedModified.begin(), stagedModified.end());
+
+    // 2. Unstaged changes (Working Tree vs Staging / HEAD snapshot)
+    HashTable trackedTable;
+    for (const auto& entry : headSnapshot.getAll()) {
+        trackedTable.insert(entry.first, entry.second);
+    }
+    for (const auto& entry : stagingTable.getAll()) {
+        trackedTable.insert(entry.first, entry.second);
+    }
+
+    vector<string> unstagedModified;
+    vector<string> unstagedDeleted;
+
+    for (const auto& entry : trackedTable.getAll()) {
+        const string& fName = entry.first;
+        const string& baseHash = entry.second;
+
+        if (!fs::exists(fName, ec)) {
+            unstagedDeleted.push_back(fName);
+        } else {
+            string content;
+            if (readFileToString(fName, content)) {
+                string workHash = calculateHash(content);
+                if (workHash != baseHash) {
+                    unstagedModified.push_back(fName);
+                }
+            }
+        }
+    }
+    sort(unstagedModified.begin(), unstagedModified.end());
+    sort(unstagedDeleted.begin(), unstagedDeleted.end());
+
+    bool hasStaged = !stagedNew.empty() || !stagedModified.empty();
+    bool hasUnstaged = !unstagedModified.empty() || !unstagedDeleted.empty();
+
+    if (hasStaged) {
+        cout << "\nChanges to be committed:" << endl;
+        for (const auto& f : stagedNew) {
+            cout << "  new file:   " << f << endl;
+        }
+        for (const auto& f : stagedModified) {
+            cout << "  modified:   " << f << endl;
+        }
+    }
+
+    if (hasUnstaged) {
+        cout << "\nChanges not staged for commit:" << endl;
+        for (const auto& f : unstagedModified) {
+            cout << "  modified:   " << f << endl;
+        }
+        for (const auto& f : unstagedDeleted) {
+            cout << "  deleted:    " << f << endl;
+        }
+    }
+
+    if (!hasStaged && !hasUnstaged) {
+        cout << "nothing to commit, working tree clean" << endl;
+    } else if (!hasStaged && hasUnstaged) {
+        cout << "\nno changes added to commit (use \"minigit add\" to stage)" << endl;
+    }
+}
+
+// Function to create a new permanent commit snapshot (Phase 5 + Author & Timestamp)
+void createCommit(const string& rawMessage) {
+    const string repoDir = ".minigit";
+    const string headFile = repoDir + "/HEAD";
+    const string stagingFile = repoDir + "/staging";
+    const string commitsDir = repoDir + "/commits";
+
+    error_code ec;
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
     if (rawMessage.find('\n') != string::npos || rawMessage.find('\r') != string::npos) {
         cerr << "Error: Commit message cannot contain newline characters." << endl;
         return;
@@ -560,13 +885,11 @@ void createCommit(const string& rawMessage) {
     size_t last = message.find_last_not_of(" \t");
     message = message.substr(first, last - first + 1);
 
-    // 3. Verify that .minigit/staging exists
     if (!fs::exists(stagingFile, ec)) {
         cout << "Error: Nothing to commit." << endl;
         return;
     }
 
-    // 4. Read all staged entries into custom HashTable
     HashTable commitTable = loadStagingTable();
     auto stagedEntries = commitTable.getAll();
     if (stagedEntries.empty()) {
@@ -574,13 +897,11 @@ void createCommit(const string& rawMessage) {
         return;
     }
 
-    // 5. Determine parent commit ID by resolving HEAD
     string parent = resolveCurrentCommit(repoDir);
     if (parent.empty()) {
         parent = "NULL";
     }
 
-    // 6. Staging vs Parent Snapshot comparison (prevent duplicate commits)
     if (parent != "NULL") {
         HashTable parentTable = loadSnapshot(parent);
         if (commitTable.size() == parentTable.size()) {
@@ -598,13 +919,11 @@ void createCommit(const string& rawMessage) {
         }
     }
 
-    // 7. Derive unique commit ID using persistent counter
     int commitNumber = getNextCommitNumber(repoDir);
     char buf[16];
     snprintf(buf, sizeof(buf), "C%03d", commitNumber);
     string commitId = buf;
 
-    // 8. Ensure .minigit/commits/ directory exists
     if (!fs::exists(commitsDir, ec)) {
         if (!fs::create_directory(commitsDir, ec)) {
             cerr << "Error: Unable to create commits directory." << endl;
@@ -612,7 +931,10 @@ void createCommit(const string& rawMessage) {
         }
     }
 
-    // 9. Write commit snapshot file (.minigit/commits/<commitId>)
+    // Retrieve author and generate timestamp (Task 3 Item 5)
+    string author = getUserConfig(repoDir, "user.name", "Unknown <unknown@minigit>");
+    string timestamp = getCurrentTimestamp();
+
     string commitFilePath = commitsDir + "/" + commitId;
     ofstream commitOut(commitFilePath);
     if (!commitOut.is_open()) {
@@ -622,17 +944,17 @@ void createCommit(const string& rawMessage) {
 
     commitOut << "id=" << commitId << "\n";
     commitOut << "message=" << message << "\n";
-    commitOut << "parent=" << parent << "\n\n";
+    commitOut << "parent=" << parent << "\n";
+    commitOut << "author=" << author << "\n";
+    commitOut << "timestamp=" << timestamp << "\n\n";
 
     for (const auto& entry : stagedEntries) {
         commitOut << entry.first << "|" << entry.second << "\n";
     }
     commitOut.close();
 
-    // 10. Advance reference: Current Branch vs Detached HEAD (Phase 8)
     string currentBranch = getCurrentBranchName(repoDir);
     if (!currentBranch.empty()) {
-        // On a branch: advance the branch reference file
         string branchFilePath = repoDir + "/refs/heads/" + currentBranch;
         ofstream branchOut(branchFilePath);
         if (!branchOut.is_open()) {
@@ -641,9 +963,7 @@ void createCommit(const string& rawMessage) {
         }
         branchOut << commitId << "\n";
         branchOut.close();
-        // HEAD remains "ref: refs/heads/<currentBranch>"
     } else {
-        // In detached HEAD state: update HEAD file directly with raw commit ID and warn user
         ofstream headOut(headFile);
         if (!headOut.is_open()) {
             cerr << "Error: Unable to update HEAD reference." << endl;
@@ -654,8 +974,76 @@ void createCommit(const string& rawMessage) {
         cout << "Warning: Committing in 'detached HEAD' state. HEAD is now at " << commitId << endl;
     }
 
-    // 11. Print commit confirmation
     cout << "[" << commitId << "] " << message << endl;
+}
+
+// Function to display commit details (Task 3 Item 4)
+void showCommit(const string& commitId) {
+    const string repoDir = ".minigit";
+    error_code ec;
+
+    if (!fs::exists(repoDir, ec)) {
+        cerr << "Error: Not a MiniGit repository." << endl;
+        cerr << "Run 'minigit init' first." << endl;
+        return;
+    }
+
+    migrateOldRepository(repoDir);
+
+    string commitFilePath = repoDir + "/commits/" + commitId;
+    if (!fs::exists(commitFilePath, ec)) {
+        cerr << "Error: Commit '" << commitId << "' does not exist." << endl;
+        return;
+    }
+
+    ifstream commitIn(commitFilePath);
+    if (!commitIn.is_open()) {
+        cerr << "Error: Unable to open commit file at '" << commitFilePath << "'." << endl;
+        return;
+    }
+
+    string id = commitId;
+    string message = "";
+    string parent = "NULL";
+    string author = "Unknown";
+    string timestamp = "Unknown";
+    vector<pair<string, string>> files;
+
+    string line;
+    while (getline(commitIn, line)) {
+        trimCarriageReturn(line);
+        if (line.empty()) continue;
+
+        if (line.rfind("id=", 0) == 0) {
+            id = line.substr(3);
+        } else if (line.rfind("message=", 0) == 0) {
+            message = line.substr(8);
+        } else if (line.rfind("parent=", 0) == 0) {
+            parent = line.substr(7);
+        } else if (line.rfind("author=", 0) == 0) {
+            author = line.substr(7);
+        } else if (line.rfind("timestamp=", 0) == 0) {
+            timestamp = line.substr(10);
+        } else {
+            size_t delim = line.find('|');
+            if (delim != string::npos) {
+                files.push_back({line.substr(0, delim), line.substr(delim + 1)});
+            }
+        }
+    }
+    commitIn.close();
+
+    cout << "commit " << id << endl;
+    cout << "Author:    " << author << endl;
+    cout << "Date:      " << timestamp << endl;
+    cout << "Parent:    " << parent << endl;
+    cout << endl;
+    cout << "    " << message << endl;
+    cout << endl;
+    cout << "Tracked Files (" << files.size() << "):" << endl;
+    for (const auto& file : files) {
+        cout << "  " << file.first << " (Hash: " << file.second << ")" << endl;
+    }
 }
 
 // Function to checkout a target (branch name or commit ID) with safety checks
@@ -666,8 +1054,6 @@ void checkoutTarget(const string& target, bool force) {
     const string objectsDir = repoDir + "/objects";
 
     error_code ec;
-
-    // 1. Verify .minigit repository exists
     if (!fs::exists(repoDir, ec)) {
         cerr << "Error: Not a MiniGit repository." << endl;
         cerr << "Run 'minigit init' first." << endl;
@@ -676,7 +1062,6 @@ void checkoutTarget(const string& target, bool force) {
 
     migrateOldRepository(repoDir);
 
-    // 2. Determine if target is a branch name or commit ID using custom HashTable
     HashTable branchTable = loadBranchTable(repoDir);
     bool isBranch = branchTable.contains(target);
     string targetCommitId = "";
@@ -684,7 +1069,6 @@ void checkoutTarget(const string& target, bool force) {
     if (isBranch) {
         targetCommitId = branchTable.get(target);
         if (targetCommitId.empty()) {
-            // Branch has no commits yet: switch HEAD reference
             ofstream headOut(headFile);
             headOut << "ref: refs/heads/" << target << "\n";
             headOut.close();
@@ -692,7 +1076,6 @@ void checkoutTarget(const string& target, bool force) {
             return;
         }
     } else {
-        // Check if target is a valid commit file in .minigit/commits/<target>
         string commitFilePath = repoDir + "/commits/" + target;
         if (fs::exists(commitFilePath, ec)) {
             targetCommitId = target;
@@ -702,7 +1085,6 @@ void checkoutTarget(const string& target, bool force) {
         }
     }
 
-    // 3. Checkout Safety Check: verify uncommitted changes against current snapshot
     string currentCommit = resolveCurrentCommit(repoDir);
     HashTable headSnapshot;
     if (!currentCommit.empty()) {
@@ -713,7 +1095,6 @@ void checkoutTarget(const string& target, bool force) {
         bool hasUncommittedChanges = false;
         HashTable currentStaging = loadStagingTable();
 
-        // Check if staging differs from HEAD snapshot
         if (currentStaging.size() != headSnapshot.size()) {
             hasUncommittedChanges = true;
         } else {
@@ -725,7 +1106,6 @@ void checkoutTarget(const string& target, bool force) {
             }
         }
 
-        // Check if working directory files differ from HEAD snapshot
         if (!hasUncommittedChanges) {
             for (const auto& entry : headSnapshot.getAll()) {
                 const string& fName = entry.first;
@@ -753,7 +1133,6 @@ void checkoutTarget(const string& target, bool force) {
         }
     }
 
-    // 4. Load target commit snapshot and metadata
     HashTable targetSnapshot = loadSnapshot(targetCommitId);
     string commitMessage = "";
     string commitFilePath = repoDir + "/commits/" + targetCommitId;
@@ -770,7 +1149,6 @@ void checkoutTarget(const string& target, bool force) {
         commitIn.close();
     }
 
-    // 5. Clean up tracked files from previous commit that do not exist in target commit
     for (const auto& entry : headSnapshot.getAll()) {
         const string& prevFile = entry.first;
         if (!targetSnapshot.contains(prevFile)) {
@@ -780,7 +1158,6 @@ void checkoutTarget(const string& target, bool force) {
         }
     }
 
-    // 6. Restore files from .minigit/objects/<hash> into working directory
     int restoredCount = 0;
     for (const auto& entry : targetSnapshot.getAll()) {
         const string& fName = entry.first;
@@ -814,10 +1191,8 @@ void checkoutTarget(const string& target, bool force) {
         restoredCount++;
     }
 
-    // 7. Synchronize .minigit/staging with checked-out snapshot
     saveTableToFile(stagingFile, targetSnapshot);
 
-    // 8. Update HEAD pointer
     ofstream headOut(headFile);
     if (!headOut.is_open()) {
         cerr << "Error: Unable to update HEAD." << endl;
@@ -844,13 +1219,11 @@ void checkoutTarget(const string& target, bool force) {
 
 // Function to create and switch to a new branch: minigit checkout -b <name>
 void checkoutNewBranch(const string& name, bool force) {
-    (void)force; // Squelch unused warning; new branch points to current commit
+    (void)force;
     const string repoDir = ".minigit";
     const string headFile = repoDir + "/HEAD";
 
     error_code ec;
-
-    // 1. Verify .minigit repository exists
     if (!fs::exists(repoDir, ec)) {
         cerr << "Error: Not a MiniGit repository." << endl;
         cerr << "Run 'minigit init' first." << endl;
@@ -859,21 +1232,18 @@ void checkoutNewBranch(const string& name, bool force) {
 
     migrateOldRepository(repoDir);
 
-    // 2. Ensure repository has at least one commit
     string currentCommit = resolveCurrentCommit(repoDir);
     if (currentCommit.empty()) {
         cerr << "Error: Cannot create branch '" << name << "'; no commits yet." << endl;
         return;
     }
 
-    // 3. Verify branch name does not already exist
     HashTable branchTable = loadBranchTable(repoDir);
     if (branchTable.contains(name)) {
         cerr << "Error: Branch '" << name << "' already exists." << endl;
         return;
     }
 
-    // 4. Create branch pointer file at .minigit/refs/heads/<name> pointing to current commit
     string branchFilePath = repoDir + "/refs/heads/" + name;
     ofstream branchOut(branchFilePath);
     if (!branchOut.is_open()) {
@@ -883,7 +1253,6 @@ void checkoutNewBranch(const string& name, bool force) {
     branchOut << currentCommit << "\n";
     branchOut.close();
 
-    // 5. Update HEAD to point symbolically to the new branch
     ofstream headOut(headFile);
     if (!headOut.is_open()) {
         cerr << "Error: Unable to update HEAD." << endl;
@@ -911,11 +1280,9 @@ void listBranches() {
     string currentBranch = getCurrentBranchName(repoDir);
     string currentCommit = resolveCurrentCommit(repoDir);
 
-    // Load branches into custom HashTable (branchName -> commitId)
     HashTable branchTable = loadBranchTable(repoDir);
     auto allBranches = branchTable.getAll();
 
-    // If no branch files exist yet, display default branch pointer if available
     if (allBranches.empty()) {
         if (!currentBranch.empty()) {
             cout << "* " << currentBranch << endl;
@@ -923,14 +1290,12 @@ void listBranches() {
         return;
     }
 
-    // Collect branch names and sort alphabetically for consistent display
     vector<string> names;
     for (const auto& b : allBranches) {
         names.push_back(b.first);
     }
     sort(names.begin(), names.end());
 
-    // Display detached HEAD status if applicable
     if (currentBranch.empty() && !currentCommit.empty()) {
         cout << "* (HEAD detached at " << currentCommit << ")" << endl;
     }
@@ -944,7 +1309,7 @@ void listBranches() {
     }
 }
 
-// Function to create a new branch at the current commit
+// Function to create a new branch at current commit
 void createBranch(const string& name) {
     const string repoDir = ".minigit";
 
@@ -957,21 +1322,18 @@ void createBranch(const string& name) {
 
     migrateOldRepository(repoDir);
 
-    // 1. Check if any commits exist
     string currentCommit = resolveCurrentCommit(repoDir);
     if (currentCommit.empty()) {
         cerr << "Error: Cannot create branch '" << name << "'; no commits yet." << endl;
         return;
     }
 
-    // 2. Check if branch already exists using HashTable
     HashTable branchTable = loadBranchTable(repoDir);
     if (branchTable.contains(name)) {
         cerr << "Error: Branch '" << name << "' already exists." << endl;
         return;
     }
 
-    // 3. Write branch pointer file
     string branchFilePath = repoDir + "/refs/heads/" + name;
     ofstream branchOut(branchFilePath);
     if (!branchOut.is_open()) {
@@ -984,7 +1346,7 @@ void createBranch(const string& name) {
     cout << "Created branch '" << name << "' at " << currentCommit << "." << endl;
 }
 
-// Function to delete a branch reference (minigit branch -d <name>)
+// Function to delete a branch reference: minigit branch -d <name>
 void deleteBranch(const string& name) {
     const string repoDir = ".minigit";
 
@@ -997,21 +1359,18 @@ void deleteBranch(const string& name) {
 
     migrateOldRepository(repoDir);
 
-    // 1. Refuse to delete the currently active branch
     string currentBranch = getCurrentBranchName(repoDir);
     if (currentBranch == name) {
         cerr << "Error: Cannot delete the current branch '" << name << "'." << endl;
         return;
     }
 
-    // 2. Check if branch exists
     HashTable branchTable = loadBranchTable(repoDir);
     if (!branchTable.contains(name)) {
         cerr << "Error: Branch '" << name << "' not found." << endl;
         return;
     }
 
-    // 3. Remove branch file from .minigit/refs/heads/
     string branchFilePath = repoDir + "/refs/heads/" + name;
     if (!fs::remove(branchFilePath, ec)) {
         cerr << "Error: Unable to delete branch '" << name << "'." << endl;
@@ -1021,14 +1380,12 @@ void deleteBranch(const string& name) {
     cout << "Deleted branch '" << name << "'." << endl;
 }
 
-// Function to display commit history log (Phase 6 + Phase 8 Branch Resolution)
-void printCommitLog() {
+// Function to display commit history log (Phase 6 + Phase 8 + Task 3 Item 6 --oneline)
+void printCommitLog(bool oneline) {
     const string repoDir = ".minigit";
     const string commitsDir = repoDir + "/commits";
 
     error_code ec;
-
-    // 1. Verify .minigit repository exists
     if (!fs::exists(repoDir, ec)) {
         cerr << "Error: Not a MiniGit repository." << endl;
         cerr << "Run 'minigit init' first." << endl;
@@ -1037,14 +1394,12 @@ void printCommitLog() {
 
     migrateOldRepository(repoDir);
 
-    // 2. Resolve starting commit node from current HEAD / active branch
     string currentCommit = resolveCurrentCommit(repoDir);
     if (currentCommit.empty() || currentCommit == "main" || currentCommit == "NULL") {
         cout << "No commits yet." << endl;
         return;
     }
 
-    // 3. Linked list traversal: Follow parent pointers backward from starting commit
     bool first = true;
     while (!currentCommit.empty() && currentCommit != "NULL") {
         string commitFilePath = commitsDir + "/" + currentCommit;
@@ -1075,6 +1430,8 @@ void printCommitLog() {
                 message = line.substr(8);
             } else if (line.rfind("parent=", 0) == 0) {
                 parent = line.substr(7);
+            } else if (line.rfind("author=", 0) == 0 || line.rfind("timestamp=", 0) == 0) {
+                continue;
             } else {
                 size_t delim = line.find('|');
                 if (delim != string::npos) {
@@ -1084,22 +1441,24 @@ void printCommitLog() {
         }
         commitIn.close();
 
-        // Print commit details with linked list arrow
-        if (!first) {
-            cout << "\n    |\n    v\n\n";
-        }
-        first = false;
+        if (oneline) {
+            cout << id << " " << message << endl;
+        } else {
+            if (!first) {
+                cout << "\n    |\n    v\n\n";
+            }
+            first = false;
 
-        cout << "commit " << id << endl;
-        cout << "Message: " << message << endl;
-        cout << "Parent:  " << parent << endl;
-        cout << "Files (" << files.size() << "): ";
-        for (size_t i = 0; i < files.size(); ++i) {
-            cout << files[i] << (i + 1 < files.size() ? ", " : "");
+            cout << "commit " << id << endl;
+            cout << "Message: " << message << endl;
+            cout << "Parent:  " << parent << endl;
+            cout << "Files (" << files.size() << "): ";
+            for (size_t i = 0; i < files.size(); ++i) {
+                cout << files[i] << (i + 1 < files.size() ? ", " : "");
+            }
+            cout << endl;
         }
-        cout << endl;
 
-        // Traverse to parent node in singly linked list
         currentCommit = parent;
     }
 }
@@ -1151,37 +1510,32 @@ void runHashTableTests() {
     cout << "Bucket index for \"main.cpp\": " << table.getBucketIndex("main.cpp") << endl;
     cout << "Bucket index for \"beta.txt\": " << table.getBucketIndex("beta.txt") << endl;
 
-    // Insert both keys into hash table
     table.insert("beta.txt", "22222");
     table.insert("main.cpp", "12345");
     cout << "Inserted both \"beta.txt\" and \"main.cpp\" into the table." << endl;
 
-    // Display internal bucket layout
     cout << "\nCurrent Bucket Structure:" << endl;
     table.printTable();
 
-    // Verify independent retrieval from same bucket chain
     cout << "\nVerifying independent retrieval from the same bucket chain:" << endl;
     cout << "get(\"main.cpp\"): " << table.get("main.cpp") << " (Expected: 12345)" << endl;
     cout << "get(\"beta.txt\"): " << table.get("beta.txt") << " (Expected: 22222)" << endl;
     cout << "contains(\"main.cpp\"): " << (table.contains("main.cpp") ? "true" : "false") << " (Expected: true)" << endl;
     cout << "contains(\"beta.txt\"): " << (table.contains("beta.txt") ? "true" : "false") << " (Expected: true)" << endl;
 
-    // Verify getAll()
     cout << "\nTesting getAll() iteration:" << endl;
     auto allItems = table.getAll();
     for (const auto& item : allItems) {
         cout << "  " << item.first << " -> " << item.second << endl;
     }
 
-    // Verify removing one colliding key does not affect the other in the chain
     cout << "\nRemoving \"main.cpp\" from the collision chain..." << endl;
     table.remove("main.cpp");
     cout << "contains(\"main.cpp\"): " << (table.contains("main.cpp") ? "true" : "false") << " (Expected: false)" << endl;
     cout << "contains(\"beta.txt\"): " << (table.contains("beta.txt") ? "true" : "false") << " (Expected: true)" << endl;
     cout << "get(\"beta.txt\"): " << table.get("beta.txt") << " (Expected: 22222)" << endl;
 
-    // 7. Test Dynamic Resizing (Task 1 Item D)
+    // 7. Test Dynamic Resizing
     cout << "\n--- [7] Testing Dynamic Resizing (Item D) ---" << endl;
     HashTable resizeTable;
     cout << "Table size before inserting 30 keys: " << resizeTable.getTableSize() << endl;
@@ -1205,15 +1559,19 @@ void printUsage() {
     cout << "Unknown command." << endl;
     cout << "Available commands:" << endl;
     cout << "  minigit init" << endl;
+    cout << "  minigit status" << endl;
     cout << "  minigit hash <filename>" << endl;
-    cout << "  minigit add <filename>" << endl;
+    cout << "  minigit add <filename | .>" << endl;
+    cout << "  minigit rm <filename> [--cached]" << endl;
     cout << "  minigit commit \"<message>\"" << endl;
     cout << "  minigit branch" << endl;
     cout << "  minigit branch <name>" << endl;
     cout << "  minigit branch -d <name>" << endl;
     cout << "  minigit checkout <branch|commitId> [--force]" << endl;
     cout << "  minigit checkout -b <name> [--force]" << endl;
-    cout << "  minigit log" << endl;
+    cout << "  minigit show <commitId>" << endl;
+    cout << "  minigit log [--oneline]" << endl;
+    cout << "  minigit config user.name \"<name>\"" << endl;
     cout << "  minigit test-hashtable" << endl;
 }
 
@@ -1228,6 +1586,9 @@ int main(int argc, char* argv[]) {
     if (command == "init") {
         initRepository();
     } 
+    else if (command == "status") {
+        printStatus();
+    }
     else if (command == "hash") {
         if (argc < 3) {
             cout << "Usage:" << endl;
@@ -1238,10 +1599,37 @@ int main(int argc, char* argv[]) {
     } else if (command == "add") {
         if (argc < 3) {
             cout << "Usage:" << endl;
-            cout << "  minigit add <filename>" << endl;
+            cout << "  minigit add <filename | .>" << endl;
             return 1;
         }
-        addFile(argv[2]);
+        string target = argv[2];
+        if (target == ".") {
+            addAll();
+        } else {
+            addFile(target);
+        }
+    } else if (command == "rm") {
+        if (argc < 3) {
+            cout << "Usage:" << endl;
+            cout << "  minigit rm <filename> [--cached]" << endl;
+            return 1;
+        }
+        bool cached = false;
+        string targetFile = "";
+        for (int i = 2; i < argc; ++i) {
+            string arg = argv[i];
+            if (arg == "--cached") {
+                cached = true;
+            } else if (targetFile.empty()) {
+                targetFile = arg;
+            }
+        }
+        if (targetFile.empty()) {
+            cout << "Usage:" << endl;
+            cout << "  minigit rm <filename> [--cached]" << endl;
+            return 1;
+        }
+        removeFile(targetFile, cached);
     } else if (command == "commit") {
         if (argc < 3) {
             cout << "Usage:" << endl;
@@ -1249,6 +1637,13 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         createCommit(argv[2]);
+    } else if (command == "show") {
+        if (argc < 3) {
+            cout << "Usage:" << endl;
+            cout << "  minigit show <commitId>" << endl;
+            return 1;
+        }
+        showCommit(argv[2]);
     } else if (command == "branch") {
         if (argc == 2) {
             listBranches();
@@ -1299,7 +1694,22 @@ int main(int argc, char* argv[]) {
             checkoutTarget(target, force);
         }
     } else if (command == "log") {
-        printCommitLog();
+        bool oneline = false;
+        if (argc >= 3 && string(argv[2]) == "--oneline") {
+            oneline = true;
+        }
+        printCommitLog(oneline);
+    } else if (command == "config") {
+        if (argc == 4 && string(argv[2]) == "user.name") {
+            setUserConfig(".minigit", "user.name", argv[3]);
+            cout << "user.name = " << argv[3] << endl;
+        } else if (argc == 3 && string(argv[2]) == "user.name") {
+            cout << getUserConfig(".minigit", "user.name", "Unknown") << endl;
+        } else {
+            cout << "Usage:" << endl;
+            cout << "  minigit config user.name \"<name>\"" << endl;
+            return 1;
+        }
     } else if (command == "test-hashtable") {
         runHashTableTests();
     } else {

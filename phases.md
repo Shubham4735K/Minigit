@@ -16,8 +16,9 @@ This reference document tracks the development phases of **MiniGit**, detailing 
 | **Phase 6** | Commit History Log | `minigit log` | Linked List Traversal ($O(k)$) from active branch / HEAD | **Completed** |
 | **Phase 7** | Rollback & Object Storage | `minigit checkout <id> [--force]` | State Restoration, Uncommitted Changes Guard, Tracked File Pruning | **Completed** |
 | **Phase 8** | Branches & Named Pointers | `minigit branch [-d]`, `minigit checkout [-b]` | Graph / DAG Branching, Named Pointers, Custom HashTable Reference Store | **Completed** |
-| **Phase 9** | Line-by-Line Diff | `minigit diff` | Longest Common Subsequence (LCS) / Dynamic Programming | *Next up* |
-| **Phase 10** | Three-Way Merge | `minigit merge <branch>` | Lowest Common Ancestor (LCA) on DAG | *Planned* |
+| **Phase 9** | Everyday Commands & Repository Status | `minigit status`, `rm`, `add .`, `show`, `config`, `log --oneline` | $O(1)$ Hash Table Set Operations, DFS Directory Traversal, Commit Metadata Serialization | **Completed** |
+| **Phase 10** | Line-by-Line Diff | `minigit diff` | Longest Common Subsequence (LCS) / Dynamic Programming | *Next up* |
+| **Phase 11** | Three-Way Merge | `minigit merge <branch>` | Lowest Common Ancestor (LCA) on DAG | *Planned* |
 
 ---
 
@@ -129,7 +130,38 @@ This reference document tracks the development phases of **MiniGit**, detailing 
 
 ---
 
-### Phase 9: File Difference (`minigit diff`)
+### Phase 9: Everyday Commands & Repository Status (`minigit status`, `rm`, `add .`, `show`, `config`, `log --oneline`)
+* **Status:** Completed
+* **Purpose:** Provides comprehensive daily workflow tools for repository inspection, selective staging/unstaging, user identity configuration, recursive staging, and granular commit inspection.
+* **DSA Concept:** **Fast Set Operations via Custom HashTable & Recursive Directory Traversal**
+  * **Repository Status (`minigit status`):**
+    * Compares three distinct file universes: the Working Directory ($W$), the Staging Area ($S$), and the HEAD Commit Snapshot ($C$).
+    * Employs our custom `HashTable` for fast key-value lookups ($O(1)$ average time per probe) to classify each file into:
+      * **Changes to be committed (Staged):**
+        * New staged files: $f \in S \land f \notin C$.
+        * Modified staged files: $f \in S \land f \in C \land \text{hash}_S(f) \ne \text{hash}_C(f)$.
+      * **Changes not staged for commit:**
+        * Working tree modified: $f \in W \land ((f \in S \land \text{hash}_W(f) \ne \text{hash}_S(f)) \lor (f \notin S \land f \in C \land \text{hash}_W(f) \ne \text{hash}_C(f)))$.
+        * Tracked deleted: $(f \in S \lor f \in C) \land f \notin W$.
+    * Time Complexity: $O(N_w + N_s + N_c)$ vs. naive $O(N^2)$ comparisons.
+  * **Recursive Staging (`minigit add .`):**
+    * Traverses directory tree depth-first (DFS).
+    * Applies `.minigitignore` pattern filtering (exact filename and `*.ext` extension patterns).
+    * Bypasses internal metadata (`.minigit/`, `.git/`) and executable binaries (`*.exe`).
+  * **Staging and Disk Removal (`minigit rm [--cached]`):**
+    * Modifies staging table in $O(1)$ time via `table.remove(file)`.
+    * Optionally unlinks working directory file from disk.
+  * **Commit Metadata & Extensible Headers (`minigit show`, `minigit config`):**
+    * Reads and writes `.minigit/config` (`user.name`).
+    * Appends `author=<name>` and `timestamp=<YYYY-MM-DD HH:MM:SS>` headers to commit objects.
+    * Backward-compatible header parsing: missing fields gracefully default to `"Unknown <unknown@minigit>"`.
+  * **Compact Log (`minigit log --oneline`):**
+    * Singly linked list traversal outputting compact single-line commit summaries: `<commitId> <message>`.
+* **Files Involved:** `main.cpp` (`printStatus()`, `removeFile()`, `collectFilesRecursive()`, `isIgnored()`, `showCommit()`, `getUserConfig()`, `setUserConfig()`, `printCommitLog()`).
+
+---
+
+### Phase 10: File Difference (`minigit diff`)
 * **Status:** Planned
 * **Purpose:** Compares the working file against the staged or last committed version.
 * **DSA Concept:** **Longest Common Subsequence (LCS) / Dynamic Programming**
@@ -137,7 +169,7 @@ This reference document tracks the development phases of **MiniGit**, detailing 
 
 ---
 
-### Phase 10: Three-Way Merge (`minigit merge <branch>`)
+### Phase 11: Three-Way Merge (`minigit merge <branch>`)
 * **Status:** Planned
 * **Purpose:** Automatically merges changes from another branch into the current branch.
 * **DSA Concept:** **Lowest Common Ancestor (LCA)**
