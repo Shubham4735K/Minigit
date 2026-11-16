@@ -3,7 +3,7 @@
 A lightweight command-line version-control project designed for 2nd-year Data Structures and Algorithms (DSA). MiniGit demonstrates core data structure concepts step-by-step.
 
 ## Current Project Status
-**Phase 7 — Checkout, Commit Log & Content-Addressable Storage**
+**Phase 7 (Enhanced) — Dynamic Hash Table, Safe Checkout, Object Store & Linked Commits**
 
 ---
 
@@ -16,6 +16,7 @@ minigit init
 - Checks if a `.minigit` directory already exists to prevent overwriting existing data.
 - Creates a hidden `.minigit/` directory and `.minigit/objects/` store for content blobs.
 - Initializes the `HEAD` file pointing to the default branch (`main`).
+- Initializes a persistent commit counter file (`.minigit/counter`) to `0`.
 
 ### 2. Compute File Hash
 ```bash
@@ -31,7 +32,8 @@ minigit add <filename>
 ```
 - Checks that the current directory is an initialized MiniGit repository.
 - Computes the file's hash using `calculateHash()`.
-- Saves the file's content into Content-Addressable Storage (`.minigit/objects/<hash>`) with deduplication.
+- **Collision-Safe Object Storage:** Checks if `.minigit/objects/<hash>` already exists. Verifies byte-level equality to detect real hash collisions and abort if content differs.
+- Saves the file's content into Content-Addressable Storage (`.minigit/objects/<hash>`).
 - Loads existing staged files from `.minigit/staging` into the custom in-memory `HashTable`.
 - Inserts or updates the file's entry (`filename → hash`) in the `HashTable`.
 - Persists all staged entries back to `.minigit/staging`.
@@ -51,10 +53,11 @@ Hash: 5019670368770650375
 minigit commit "<message>"
 ```
 - Verifies `.minigit` repository exists.
-- Checks that `.minigit/staging` exists and contains at least one file.
+- Validates commit message: rejects newline characters and rejects empty or whitespace-only messages.
+- Checks that `.minigit/staging` exists and contains staged files.
 - Reads staged entries into the custom `HashTable`.
-- Determines parent commit ID from `.minigit/HEAD` (`NULL` for first commit, or previous commit ID).
-- Creates a new sequential commit ID (`C001`, `C002`, `C003`, ...).
+- **Duplicate Commit Guard:** Compares the staging table with the parent commit's snapshot using `loadSnapshot(commitId)`. If identical, prints `"Nothing to commit, working tree clean"` and aborts.
+- **Persistent Global Counter:** Reads `.minigit/counter` to assign a globally unique commit ID (`C001`, `C002`, `C003`, ...), eliminating commit overwrites after checkout.
 - Creates a permanent snapshot file at `.minigit/commits/<commitId>`.
 - Updates `.minigit/HEAD` to point to the newly created commit.
 
@@ -69,11 +72,12 @@ Output:
 
 ### 5. Checkout / Restore Commit Snapshot
 ```bash
-minigit checkout <commitId>
+minigit checkout <commitId> [--force]
 ```
 - Verifies `.minigit` repository and target commit exist.
-- Parses the snapshot file at `.minigit/commits/<commitId>`.
-- Retrieves file contents from `.minigit/objects/<hash>` and overwrites working files to restore exact state.
+- **Safety Check:** Checks if staging or working files differ from the current `HEAD` commit snapshot (uncommitted changes). Refuses with an error unless `--force` is passed.
+- **File Pruning:** Deletes files that were tracked in the previous commit but do not exist in the target snapshot.
+- Restores file contents from `.minigit/objects/<hash>` into the working directory.
 - Synchronizes `.minigit/staging` with the checked-out snapshot.
 - Moves `.minigit/HEAD` pointer to `<commitId>`.
 
@@ -119,72 +123,51 @@ Files (1): test.txt
 ```bash
 minigit test-hashtable
 ```
-- Runs the test suite verifying custom `HashTable` operations: insertion, lookup (`get`), presence check (`contains`), in-place updates, node deletion (`remove`), iteration (`getAll`), memory cleanup, and collision handling via separate chaining.
+- Runs the test suite verifying:
+  - Separate chaining collision handling (Bucket 0 collision between `main.cpp` and `beta.txt`).
+  - Dynamic resizing: tracks table capacity before and after inserting 30 keys ($10 \to 40$) with node relinking without reallocating nodes.
+  - Insert, update, lookup (`get`), presence check (`contains`), and node removal (`remove`).
 
 ---
 
-## Phase 5 Concept: Commits and Linked History
+## DSA Concepts Implemented
 
-### What is a Commit?
-A **commit** represents a permanent, immutable snapshot of the project's staged files at a specific moment in time.
+1. **Polynomial Rolling Hash:**
+   $$\text{hash} = \sum_{i=0}^{n-1} c_i \cdot 31^{n-1-i} \pmod{2^{64}}$$
+   - Multiplier `31` avoids anagram collisions; unsigned 64-bit integer overflow provides cross-platform determinism.
+   - Time Complexity: $O(n)$ where $n$ is file size in bytes.
 
-```text
-Staging Area (.minigit/staging)
-             ↓
-Commit Snapshot (.minigit/commits/C001)
-             ↓
-Parent Linkage (C002 -> parent=C001)
-```
+2. **Custom Hash Table with Separate Chaining & Dynamic Resizing:**
+   - Dynamic bucket array `Node** buckets` starting at initial capacity 10.
+   - Separate chaining with singly linked lists (`Node { string key, string value, Node* next }`).
+   - Load factor threshold $\alpha = \frac{\text{elementCount}}{\text{capacity}} > 0.75$.
+   - **Rehashing by Relinking:** When resizing triggers, the capacity doubles ($10 \to 20 \to 40$), and existing nodes are relinked into the new bucket array without deleting or re-allocating `Node` instances ($O(n)$ time, $0$ new Node allocations).
+   - Time Complexity: $O(1)$ average lookup, insert, and delete; amortized $O(1)$ insertions.
 
-### Linked List of Commits
-Each commit record includes a `parent` field pointing to the preceding commit ID. This establishes a **singly linked list** of project history:
+3. **Singly Linked List of Commits:**
+   - Commit history forms an explicit backward-pointing linked list (`HEAD → C003 → C001 → NULL`).
+   - Traversal (`minigit log`): $O(k)$ where $k$ is commit chain length.
 
-```text
-HEAD
-  ↓
-[C002] (parent=C001) ───► [C001] (parent=NULL)
-```
+4. **Persistent Commit Counter (`.minigit/counter`):**
+   - Keeps track of the highest assigned commit sequence number ($O(1)$).
+   - Prevents commit ID collisions after branch/commit checkout.
 
-### Commit File Format
-Stored in `.minigit/commits/<commitId>`:
-```text
-id=C001
-message=Initial commit
-parent=NULL
+5. **Content-Addressable Storage (CAS / Blobs):**
+   - Objects are stored by content hash (`.minigit/objects/<hash>`).
+   - Implements collision detection: compares content bytes if a hash exists to guarantee data integrity.
 
-main.cpp|5019670368770650375
-README.md|17705612757555493917
-```
+6. **State Synchronization & Set Difference:**
+   - Checkout computes symmetric differences between the previous commit and target commit to prune obsolete files and restore exact snapshots.
 
 ---
 
-## DSA Concepts Demonstrated So Far
-
-1. **Hashing:** Generates a deterministic polynomial integer fingerprint from file contents ($O(n)$ where $n$ is file size in bytes).
-2. **Hash Table:** Provides associative key-value mapping (`filename → hash`) with average $O(1)$ lookup, insertion, and updates.
-3. **Separate Chaining:** Handles bucket index collisions by maintaining linked lists per bucket.
-4. **Linked List:** 
-   - Used inside Hash Table buckets to chain colliding nodes.
-   - Used in commit history where each commit acts as a node pointing to its `parent`.
-5. **Content-Addressable Storage (CAS / Blobs):** Files are indexed and stored by their content hash (`.minigit/objects/<hash>`), providing inherent data deduplication and full snapshot rollback capabilities.
-6. **File Handling & Serialization:** Persists in-memory data structures across program executions.
-
----
-
-## Planned Future Features (Not Yet Implemented)
-- Branches (`minigit branch`)
-- Diff
-- Merge
-
----
-
-## Compilation and Usage
+## Compilation and Build Instructions
 
 ### Compilation
-Using standard C++17 with `g++`:
+Using standard C++17 with `g++` and zero compiler warnings:
 
 ```bash
-g++ -std=c++17 main.cpp Hash.cpp HashTable.cpp -o minigit.exe
+g++ -std=c++17 -Wall -Wextra main.cpp Hash.cpp HashTable.cpp -o minigit.exe
 ```
 
 ### Running Commands (Windows PowerShell / CMD)

@@ -3,21 +3,57 @@
 
 using namespace std;
 
-// Constructor: Initialize all bucket pointers to nullptr
-HashTable::HashTable() {
-    for (int i = 0; i < TABLE_SIZE; ++i) {
+// Constructor: Initializes dynamic bucket pointer array with INITIAL_CAPACITY (10)
+// Time Complexity: O(INITIAL_CAPACITY) = O(1)
+HashTable::HashTable()
+    : capacity(INITIAL_CAPACITY), elementCount(0) {
+    buckets = new Node*[capacity];
+    for (int i = 0; i < capacity; ++i) {
         buckets[i] = nullptr;
     }
 }
 
-// Destructor: Free all dynamically allocated nodes across all buckets
+// Destructor: Deallocates all linked list nodes and the dynamic bucket array
+// Time Complexity: O(n + capacity) where n is total elements in the hash table
 HashTable::~HashTable() {
     clear();
+    delete[] buckets;
+    buckets = nullptr;
+    capacity = 0;
 }
 
-// Clears all entries from the hash table and frees their memory
+// Move Constructor: Transfers ownership of dynamic buckets and nodes in O(1) time
+// Time Complexity: O(1)
+HashTable::HashTable(HashTable&& other) noexcept
+    : capacity(other.capacity), elementCount(other.elementCount), buckets(other.buckets) {
+    other.capacity = 0;
+    other.elementCount = 0;
+    other.buckets = nullptr;
+}
+
+// Move Assignment Operator: Cleans up current table and moves resources in O(1) time
+// Time Complexity: O(n_current + capacity_current) for cleanup, then O(1) pointer swap
+HashTable& HashTable::operator=(HashTable&& other) noexcept {
+    if (this != &other) {
+        clear();
+        delete[] buckets;
+
+        capacity = other.capacity;
+        elementCount = other.elementCount;
+        buckets = other.buckets;
+
+        other.capacity = 0;
+        other.elementCount = 0;
+        other.buckets = nullptr;
+    }
+    return *this;
+}
+
+// Clears all linked list nodes across all buckets and resets count to 0
+// Time Complexity: O(n + capacity)
 void HashTable::clear() {
-    for (int i = 0; i < TABLE_SIZE; ++i) {
+    if (buckets == nullptr) return;
+    for (int i = 0; i < capacity; ++i) {
         Node* current = buckets[i];
         while (current != nullptr) {
             Node* temp = current;
@@ -26,11 +62,14 @@ void HashTable::clear() {
         }
         buckets[i] = nullptr;
     }
+    elementCount = 0;
 }
 
-// Internal hash function: Converts a string key into a valid bucket index
-// Formula: index = (sum(c * 31^i)) % TABLE_SIZE
+// Polynomial rolling hash mapped to bucket range [0, capacity - 1]
+// Formula: index = (sum(c * 31^i)) % capacity
+// Time Complexity: O(L) where L is string key length
 int HashTable::hashFunction(const string& key) const {
+    if (capacity <= 0) return 0;
     unsigned long long hash = 0;
     const unsigned long long primeMultiplier = 31;
 
@@ -38,42 +77,93 @@ int HashTable::hashFunction(const string& key) const {
         hash = hash * primeMultiplier + static_cast<unsigned char>(c);
     }
 
-    // Modulo operation maps the hash value into [0, TABLE_SIZE - 1]
-    return static_cast<int>(hash % TABLE_SIZE);
+    return static_cast<int>(hash % capacity);
 }
 
 // Expose bucket index calculation for testing and viva demonstration
+// Time Complexity: O(L) where L is key length
 int HashTable::getBucketIndex(const string& key) const {
     return hashFunction(key);
 }
 
+// Dynamic Resizing & Rehashing:
+// Doubles capacity when load factor > 0.75 (count / capacity > 0.75).
+// Relinks existing Node pointers into new buckets WITHOUT reallocating or deleting Node objects.
+// Time Complexity: O(n + capacity) where n is element count
+// Space Complexity: O(new_capacity) for new bucket pointer array
+void HashTable::rehash() {
+    int oldCapacity = capacity;
+    Node** oldBuckets = buckets;
+
+    // Double capacity to reduce chain lengths and preserve O(1) average lookup
+    capacity = oldCapacity * 2;
+    buckets = new Node*[capacity];
+    for (int i = 0; i < capacity; ++i) {
+        buckets[i] = nullptr;
+    }
+
+    // Relink existing nodes into the new bucket array without any Node reallocations
+    for (int i = 0; i < oldCapacity; ++i) {
+        Node* current = oldBuckets[i];
+        while (current != nullptr) {
+            Node* nextNode = current->next; // Store next node pointer before unlinking
+
+            int newIndex = hashFunction(current->key); // Recalculate bucket index with doubled capacity
+
+            // Prepend existing node to head of new bucket chain (O(1))
+            current->next = buckets[newIndex];
+            buckets[newIndex] = current;
+
+            current = nextNode;
+        }
+    }
+
+    // Free the old pointer array (nodes themselves are preserved and relinked)
+    delete[] oldBuckets;
+}
+
 // Insert operation:
-// If key already exists in the chain, update its value.
-// Otherwise, create a new Node and insert it at the head of the chain.
+// 1. If key exists in bucket chain: update value in-place (element count unchanged).
+// 2. If key is new: create node and prepend to head of chain (O(1)), increment elementCount.
+// 3. If load factor (elementCount / capacity) > 0.75: trigger rehash().
+// Time Complexity: O(1) average, O(n) worst-case collision chain; amortized O(1) with resizing
 void HashTable::insert(const string& key, const string& value) {
+    if (capacity <= 0 || buckets == nullptr) {
+        capacity = INITIAL_CAPACITY;
+        buckets = new Node*[capacity];
+        for (int i = 0; i < capacity; ++i) buckets[i] = nullptr;
+    }
+
     int index = hashFunction(key);
 
     // 1. Search the bucket's linked list to check if key already exists
     Node* current = buckets[index];
     while (current != nullptr) {
         if (current->key == key) {
-            // Key already present: update value and avoid duplicate node
+            // Key already present: update value in-place without increasing count
             current->value = value;
             return;
         }
         current = current->next;
     }
 
-    // 2. Key does not exist: create a new node and insert at head of list (O(1))
+    // 2. Key does not exist: allocate new node and prepend at bucket head (O(1))
     Node* newNode = new Node(key, value);
     newNode->next = buckets[index];
     buckets[index] = newNode;
+    elementCount++;
+
+    // 3. Dynamic resizing check: load factor threshold = 0.75
+    if (static_cast<double>(elementCount) / capacity > 0.75) {
+        rehash();
+    }
 }
 
 // Get operation:
-// Traverses the linked list at the key's bucket index.
-// Returns the value string if found, or an empty string "" if not found.
+// Traverses linked list at key's bucket index.
+// Time Complexity: O(1) average, O(k) where k is bucket chain length (worst-case O(n))
 string HashTable::get(const string& key) const {
+    if (capacity <= 0 || buckets == nullptr) return "";
     int index = hashFunction(key);
 
     Node* current = buckets[index];
@@ -88,8 +178,10 @@ string HashTable::get(const string& key) const {
 }
 
 // Contains operation:
-// Returns true if the key exists in the hash table, false otherwise.
+// Returns true if key exists in hash table, false otherwise.
+// Time Complexity: O(1) average, O(k) worst-case
 bool HashTable::contains(const string& key) const {
+    if (capacity <= 0 || buckets == nullptr) return false;
     int index = hashFunction(key);
 
     Node* current = buckets[index];
@@ -104,9 +196,10 @@ bool HashTable::contains(const string& key) const {
 }
 
 // Remove operation:
-// Searches for the key in its bucket list, updates linked list pointers,
-// and deletes the node to prevent memory leaks.
+// Searches for key in bucket list, unlinks node from singly linked list, and frees memory.
+// Time Complexity: O(1) average, O(k) worst-case
 bool HashTable::remove(const string& key) {
+    if (capacity <= 0 || buckets == nullptr) return false;
     int index = hashFunction(key);
 
     Node* current = buckets[index];
@@ -115,28 +208,32 @@ bool HashTable::remove(const string& key) {
     while (current != nullptr) {
         if (current->key == key) {
             if (prev == nullptr) {
-                // Node to remove is the head of the bucket
+                // Node to remove is head of bucket list
                 buckets[index] = current->next;
             } else {
-                // Node to remove is in the middle or end
+                // Node to remove is in middle or end of list
                 prev->next = current->next;
             }
 
-            delete current; // Free memory
+            delete current; // Free dynamic node memory
+            elementCount--;
             return true;
         }
         prev = current;
         current = current->next;
     }
 
-    return false; // Key was not found
+    return false; // Key not found
 }
 
 // Retrieves all key-value pairs stored across all buckets
-// Traverses each bucket and its associated linked-list chain
+// Used for serialization to disk and snapshot comparisons.
+// Time Complexity: O(n + capacity)
 vector<pair<string, string>> HashTable::getAll() const {
     vector<pair<string, string>> items;
-    for (int i = 0; i < TABLE_SIZE; ++i) {
+    if (buckets == nullptr) return items;
+
+    for (int i = 0; i < capacity; ++i) {
         Node* current = buckets[i];
         while (current != nullptr) {
             items.push_back({current->key, current->value});
@@ -146,9 +243,12 @@ vector<pair<string, string>> HashTable::getAll() const {
     return items;
 }
 
-// Visualizes the buckets and chains (useful for college viva demonstrations)
+// Visualizes buckets and collision chains (for viva and debugging)
+// Time Complexity: O(n + capacity)
 void HashTable::printTable() const {
-    for (int i = 0; i < TABLE_SIZE; ++i) {
+    if (buckets == nullptr) return;
+
+    for (int i = 0; i < capacity; ++i) {
         cout << "Bucket [" << i << "]: ";
         Node* current = buckets[i];
         if (current == nullptr) {
